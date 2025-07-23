@@ -1,0 +1,11 @@
+[package]
+name = "tcp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Huseen Munye"]
+description = "TCP implementation in user-space designed for learning purposes."
+repository = "https://github.com/hmunye/tcp"
+readme = "README.md"
+
+[dependencies]
