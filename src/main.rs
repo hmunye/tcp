@@ -26,7 +26,7 @@ fn main() -> io::Result<()> {
         match IPv4Header::try_from(&buf[..nbytes]) {
             Ok(p) if p.protocol() == Protocol::TCP => {
                 info!(
-                    "IPv4 Header => Version: {}, IHL: {}, TOS: {}, Total Len: {}, ID: {}, DF: {}, MF: {}, Frag Offset: {}, TTL: {}, Protocol: {:?}, Checksum: 0x{:04x}, SRC: {:?}, DST: {:?}",
+                    "IPv4 TCP Packet | Ver: {}, IHL: {}, TOS: {}, Total: {}, ID: {}, DF: {}, MF: {}, FragOff: {}, TTL: {}, Proto: {:?}, Chksum: 0x{:04x} (valid: {}), SRC: {:?}, DST: {:?}, Payload: {} bytes",
                     p.version(),
                     p.ihl(),
                     p.tos(),
@@ -38,8 +38,10 @@ fn main() -> io::Result<()> {
                     p.ttl(),
                     p.protocol(),
                     p.header_checksum(),
+                    p.compute_header_checksum() == p.header_checksum(),
                     p.src(),
-                    p.dst()
+                    p.dst(),
+                    p.payload_len().unwrap_or(u16::MAX)
                 );
             }
             Ok(_) => {

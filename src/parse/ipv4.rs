@@ -109,12 +109,6 @@ pub struct IPv4Header {
     /// A checksum on the header only. Since some header fields change
     /// (e.g., time to live), this is recomputed and verified at each point that
     /// the internet header is processed.
-    ///
-    /// The checksum algorithm is:
-    ///
-    /// The checksum field is the 16 bit one's complement of the one's
-    /// complement sum of all 16 bit words in the header.  For purposes of
-    /// computing the checksum, the value of the checksum field is zero.
     header_checksum: u16,
     /// The source address.
     src: [u8; 4],
@@ -291,6 +285,25 @@ impl IPv4Header {
         Ok(())
     }
 
+    /// Returns the memory representation of the [IPv4Header] as a byte array in
+    /// big-endian (network) byte order.
+    pub fn to_be_bytes(&self) -> [u8; Self::MIN_HEADER_LEN as usize] {
+        let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
+
+        raw_header[0] = self.version_ihl;
+        raw_header[1] = self.tos;
+        raw_header[2..4].copy_from_slice(&self.total_len.to_be_bytes());
+        raw_header[4..6].copy_from_slice(&self.id.to_be_bytes());
+        raw_header[6..8].copy_from_slice(&self.flags_and_offset.to_be_bytes());
+        raw_header[8] = self.ttl;
+        raw_header[9] = self.protocol.into();
+        raw_header[10..12].copy_from_slice(&self.header_checksum.to_be_bytes());
+        raw_header[12..16].copy_from_slice(&self.src);
+        raw_header[16..20].copy_from_slice(&self.dst);
+
+        raw_header
+    }
+
     /// Computes the header checksum for the [IPv4Header].
     ///
     /// The checksum algorithm is:
@@ -304,13 +317,8 @@ impl IPv4Header {
         // Checksum field must be 0 for computation.
         header.header_checksum = 0;
 
-        // SAFETY: `header` is a valid pointer to an [IPv4Header].
-        let header_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                (&header as *const Self) as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        };
+        // Must be in big-endian byte order.
+        let header_bytes = header.to_be_bytes();
 
         let mut sum = 0u32;
 
