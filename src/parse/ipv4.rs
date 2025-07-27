@@ -312,6 +312,7 @@ impl IPv4Header {
     /// complement sum of all 16 bit words in the header. For purposes of
     /// computing the checksum, the value of the checksum field is zero.
     pub fn compute_header_checksum(&self) -> u16 {
+        // Only copying 20 bytes...
         let mut header = *self;
 
         // Checksum field must be 0 for computation.
@@ -369,37 +370,14 @@ impl IPv4Header {
     ///
     /// Returns an error if writing to the output stream fails.
     pub fn write<T: io::Write>(&self, output: &mut T) -> Result<(), String> {
-        // Must convert multi-byte values to network byte order.
-        let be_total_len = self.total_len.to_be_bytes();
-        let be_id = self.id.to_be_bytes();
-        let be_flags_and_offset = self.flags_and_offset.to_be_bytes();
-        let be_header_checksum = self.compute_header_checksum().to_be_bytes();
+        // Only copying 20 bytes...
+        let mut header = *self;
+        header.header_checksum = self.compute_header_checksum();
 
-        let header_raw = [
-            self.version_ihl,
-            self.tos,
-            be_total_len[0],
-            be_total_len[1],
-            be_id[0],
-            be_id[1],
-            be_flags_and_offset[0],
-            be_flags_and_offset[1],
-            self.ttl,
-            self.protocol.into(),
-            be_header_checksum[0],
-            be_header_checksum[1],
-            self.src[0],
-            self.src[1],
-            self.src[2],
-            self.src[3],
-            self.dst[0],
-            self.dst[1],
-            self.dst[2],
-            self.dst[3],
-        ];
+        let raw_header = header.to_be_bytes();
 
         output
-            .write_all(&header_raw)
+            .write_all(&raw_header)
             .map_err(|err| format!("failed to write IPv4 header to output: {err}"))?;
 
         Ok(())
