@@ -25,8 +25,8 @@ impl Tun {
     ///
     /// # Errors
     ///
-    /// This function may fail if there are conflicts with the specified name
-    /// or if the process lacks the necessary privileges (`CAP_NET_ADMIN`).
+    /// Returns an error if there are issues with the specified name or if the
+    /// process lacks the necessary privileges (CAP_NET_ADMIN).
     ///
     /// # Notes
     ///
@@ -49,8 +49,8 @@ impl Tun {
     ///
     /// # Errors
     ///
-    /// This function may fail if there are conflicts with the specified name
-    /// or if the process lacks the necessary privileges (CAP_NET_ADMIN).
+    /// Returns an error if there are issues with the specified name or if the
+    /// process lacks the necessary privileges (CAP_NET_ADMIN).
     ///
     /// # Notes
     ///

@@ -15,4 +15,5 @@ compile_error!(
 );
 
 pub mod log;
+pub mod parse;
 pub mod tun_tap;

@@ -1,29 +1,53 @@
 use std::io;
 use std::process;
 
+use tcp::parse::{IPv4Header, Protocol};
 use tcp::tun_tap;
-use tcp::{error, info};
+use tcp::{error, info, warn};
 
 fn main() -> io::Result<()> {
-    let nic = tun_tap::Tun::new("tun0").unwrap_or_else(|err| {
-        error!("tun: {err}");
+    let nic = tun_tap::Tun::without_packet_info("tun0").unwrap_or_else(|err| {
+        error!("failed to create TUN interface: {err}");
         process::exit(1);
     });
 
-    let mut buf = [0u8; 1504];
+    let mut buf = [0u8; 1500];
 
     info!("interface name: {}", nic.name());
 
     loop {
         let nbytes = nic.recv(&mut buf[..]).unwrap_or_else(|err| {
-            error!("recv: {err}");
+            error!("failed to read from TUN interface: {err}");
             process::exit(1);
         });
 
-        let flags = u16::from_be_bytes([buf[0], buf[1]]);
-        let proto = u16::from_be_bytes([buf[2], buf[3]]);
+        info!("read {} bytes: {:x?}", nbytes, &buf[..nbytes]);
 
-        info!("(flags: {flags:04x?}, proto: {proto:04x?})");
-        info!("read {nbytes} bytes: raw packet: {:x?}", &buf[..nbytes]);
+        match IPv4Header::try_from(&buf[..nbytes]) {
+            Ok(p) if p.protocol() == Protocol::TCP => {
+                info!(
+                    "IPv4 Header => Version: {}, IHL: {}, TOS: {}, Total Len: {}, ID: {}, DF: {}, MF: {}, Frag Offset: {}, TTL: {}, Protocol: {:?}, Checksum: 0x{:04x}, SRC: {:?}, DST: {:?}",
+                    p.version(),
+                    p.ihl(),
+                    p.tos(),
+                    p.total_len(),
+                    p.id(),
+                    p.dont_fragment(),
+                    p.more_fragments(),
+                    p.fragment_offset(),
+                    p.ttl(),
+                    p.protocol(),
+                    p.header_checksum(),
+                    p.src(),
+                    p.dst()
+                );
+            }
+            Ok(_) => {
+                warn!("ignoring non-TCP packet");
+            }
+            Err(err) => {
+                error!("{err}");
+            }
+        }
     }
 }

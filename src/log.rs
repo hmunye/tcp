@@ -1,10 +1,12 @@
-//! A minimal logging utility for basic message output with severity levels.
+//! Minimal logging utility for basic message output with severity levels.
 
 use std::ffi::CStr;
 use std::fmt;
 use std::io;
 use std::process;
 use std::ptr;
+
+const SOURCE: &str = "tcp";
 
 /// Represents the severity level of a log message.
 #[derive(Debug)]
@@ -17,7 +19,7 @@ pub enum Level {
     Info,
 }
 
-/// Logs a message at the [`Level::Error`] level.
+/// Logs a message at the [Level::Error] level.
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)+) => {{
@@ -25,7 +27,7 @@ macro_rules! error {
     }};
 }
 
-/// Logs a message at the [`Level::Warn`] level.
+/// Logs a message at the [Level::Warn] level.
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)+) => {{
@@ -33,7 +35,7 @@ macro_rules! warn {
     }};
 }
 
-/// Logs a message at the [`Level::Info`] level.
+/// Logs a message at the [Level::Info] level.
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)+) => {{
@@ -43,8 +45,11 @@ macro_rules! info {
 
 /// Logs a message with the given severity level.
 ///
-/// - Messages with level [`Level::Info`] are printed to **stdout**.
-/// - Messages with level [`Level::Warn`] and [`Level::Error`] are printed to **stderr**.
+/// - Messages with level [Level::Info] are printed to stdout.
+/// - Messages with level [Level::Warn] and [Level::Error] are printed to stderr.
+///
+/// If either the [libc::localtime] or [libc::strftime] functions fail, this
+/// function will terminate the program with an exit status code of 1.
 pub fn log(level: Level, msg: impl fmt::Display) {
     let mut buf = [0u8; 20]; // "YYYY-MM-DD HH:MM:SS"
 
@@ -57,7 +62,10 @@ pub fn log(level: Level, msg: impl fmt::Display) {
         // time representation.
         let tm_ptr = libc::localtime(&now);
         if tm_ptr.is_null() {
-            error!("{}", io::Error::last_os_error());
+            eprintln!(
+                "\x1b[1;37m[{SOURCE}]\x1b[0m \x1b[31mERROR\x1b[0m: {}",
+                io::Error::last_os_error()
+            );
             process::exit(1);
         }
 
@@ -74,7 +82,9 @@ pub fn log(level: Level, msg: impl fmt::Display) {
             tm_ptr,
         ) == 0
         {
-            error!("strftime function returned 0");
+            eprintln!(
+                "\x1b[1;37m[{SOURCE}]\x1b[0m \x1b[31mERROR\x1b[0m: strftime function returned 0"
+            );
             process::exit(1);
         }
     }
@@ -88,17 +98,17 @@ pub fn log(level: Level, msg: impl fmt::Display) {
     match level {
         Level::Error => {
             eprintln!(
-                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[tcp]\x1b[0m \x1b[31mERROR\x1b[0m: {msg}"
+                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[31mERROR\x1b[0m: {msg}"
             );
         }
         Level::Warn => {
             eprintln!(
-                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[tcp]\x1b[0m \x1b[33mWARN \x1b[0m: {msg}"
+                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[33mWARN \x1b[0m: {msg}"
             );
         }
         Level::Info => {
             println!(
-                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[tcp]\x1b[0m \x1b[1;97mINFO \x1b[0m: {msg}"
+                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[1;97mINFO \x1b[0m: {msg}"
             );
         }
     }
