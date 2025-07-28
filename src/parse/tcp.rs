@@ -244,7 +244,7 @@ impl TCPHeader {
         self.options
     }
 
-    /// Returns the length of the [TCPHeader] in bytes, including [TCPOptions].
+    /// Returns the length of the [TCPHeader] in bytes, including options.
     pub fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN as usize + self.options.len()
     }
@@ -322,7 +322,7 @@ impl TCPHeader {
                         sum = (sum & 0xFFFF) + (sum >> 16);
                     }
                 }
-                // Covers (None, Some(l)) and (None, None)
+                // Covers (None, Some(l)) and (None, None) cases.
                 _ => {
                     break;
                 }
@@ -502,7 +502,16 @@ impl TCPOptions {
                     continue;
                 }
                 OptionKind::MSS => {
-                    return Some(u16::from_be_bytes([opts_slice[i + 1], opts_slice[i + 2]]));
+                    // Read the actual MSS value.
+                    //
+                    // ```text
+                    //        +--------+--------+---------+--------+
+                    //        |00000010|00000100|   max seg size   |
+                    //        +--------+--------+---------+--------+
+                    //         ^                 ^^^^^^^^^^^^^^^^^^
+                    //         |-- Here           Want these bytes
+                    // ```
+                    return Some(u16::from_be_bytes([opts_slice[i + 2], opts_slice[i + 3]]));
                 }
             }
         }
