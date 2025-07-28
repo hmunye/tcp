@@ -1,7 +1,7 @@
 use std::io;
 use std::process;
 
-use tcp::parse::{IPv4Header, Protocol};
+use tcp::parse::{IPv4Header, Protocol, TCPHeader};
 use tcp::tun_tap;
 use tcp::{error, info, warn};
 
@@ -26,23 +26,43 @@ fn main() -> io::Result<()> {
         match IPv4Header::try_from(&buf[..nbytes]) {
             Ok(p) if p.protocol() == Protocol::TCP => {
                 info!(
-                    "IPv4 TCP Packet | Ver: {}, IHL: {}, TOS: {}, Total: {}, ID: {}, DF: {}, MF: {}, FragOff: {}, TTL: {}, Proto: {:?}, Chksum: 0x{:04x} (valid: {}), SRC: {:?}, DST: {:?}, Payload: {} bytes",
-                    p.version(),
-                    p.ihl(),
-                    p.tos(),
-                    p.total_len(),
-                    p.id(),
-                    p.dont_fragment(),
-                    p.more_fragments(),
-                    p.fragment_offset(),
-                    p.ttl(),
-                    p.protocol(),
-                    p.header_checksum(),
-                    p.compute_header_checksum() == p.header_checksum(),
+                    "ipv4 datagram | src: {:?}, dst: {:?}, chksum: 0x{:04x} (valid: {}), payload: {} bytes",
                     p.src(),
                     p.dst(),
+                    p.header_checksum(),
+                    p.compute_header_checksum() == p.header_checksum(),
                     p.payload_len().unwrap_or(u16::MAX)
                 );
+
+                match TCPHeader::try_from(&buf[p.header_len()..nbytes]) {
+                    Ok(t) => {
+                        let payload = &buf[p.header_len() + t.header_len()..nbytes];
+
+                        info!(
+                            "tcp segment | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), urgent pointer: {}, mss: {:?}, payload: {} bytes",
+                            t.src_port(),
+                            t.dst_port(),
+                            t.seq_number(),
+                            t.ack_number(),
+                            t.data_offset(),
+                            t.urg(),
+                            t.ack(),
+                            t.psh(),
+                            t.rst(),
+                            t.syn(),
+                            t.fin(),
+                            t.window(),
+                            t.checksum(),
+                            t.compute_checksum(&p, &[]) == t.checksum(),
+                            t.urgent_pointer(),
+                            t.options().mss(),
+                            payload.len()
+                        );
+                    }
+                    Err(err) => {
+                        error!("{err}");
+                    }
+                }
             }
             Ok(_) => {
                 warn!("ignoring non-TCP packet");

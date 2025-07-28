@@ -1,7 +1,6 @@
 use std::io;
 
-/// Representation of an IPv4 packet header (RFC 791 3.1).
-///
+/// Representation of an IPv4 datagram header (RFC 791 3.1).
 ///
 /// ```text
 ///   0                   1                   2                   3
@@ -111,13 +110,10 @@ pub struct IPv4Header {
     /// the internet header is processed.
     header_checksum: u16,
     /// The source address.
-    src: [u8; 4],
+    src_addr: [u8; 4],
     /// The destination address.
-    dst: [u8; 4],
+    dst_addr: [u8; 4],
 }
-
-// Compile-time check to ensure struct is always 20 bytes.
-const _: () = assert!(std::mem::size_of::<IPv4Header>() == 20);
 
 impl IPv4Header {
     /// Minimum length of an IPv4 header in bytes.
@@ -170,8 +166,8 @@ impl IPv4Header {
             total_len: payload_len + Self::MIN_HEADER_LEN,
             ttl,
             protocol,
-            src,
-            dst,
+            src_addr: src,
+            dst_addr: dst,
             ..Default::default()
         })
     }
@@ -240,12 +236,17 @@ impl IPv4Header {
 
     /// Returns the Source Address field from the [IPv4Header].
     pub fn src(&self) -> [u8; 4] {
-        self.src
+        self.src_addr
     }
 
     /// Returns the Destination Address field from the [IPv4Header].
     pub fn dst(&self) -> [u8; 4] {
-        self.dst
+        self.dst_addr
+    }
+
+    /// Returns the length of the [IPv4Header], not including the payload.
+    pub fn header_len(&self) -> usize {
+        Self::MIN_HEADER_LEN as usize
     }
 
     /// Determine the payload length of the [IPv4Header].
@@ -285,25 +286,6 @@ impl IPv4Header {
         Ok(())
     }
 
-    /// Returns the memory representation of the [IPv4Header] as a byte array in
-    /// big-endian (network) byte order.
-    pub fn to_be_bytes(&self) -> [u8; Self::MIN_HEADER_LEN as usize] {
-        let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
-
-        raw_header[0] = self.version_ihl;
-        raw_header[1] = self.tos;
-        raw_header[2..4].copy_from_slice(&self.total_len.to_be_bytes());
-        raw_header[4..6].copy_from_slice(&self.id.to_be_bytes());
-        raw_header[6..8].copy_from_slice(&self.flags_and_offset.to_be_bytes());
-        raw_header[8] = self.ttl;
-        raw_header[9] = self.protocol.into();
-        raw_header[10..12].copy_from_slice(&self.header_checksum.to_be_bytes());
-        raw_header[12..16].copy_from_slice(&self.src);
-        raw_header[16..20].copy_from_slice(&self.dst);
-
-        raw_header
-    }
-
     /// Computes the header checksum for the [IPv4Header].
     ///
     /// The checksum algorithm is:
@@ -317,7 +299,6 @@ impl IPv4Header {
 
         // Checksum field must be 0 for computation.
         header.header_checksum = 0;
-
         // Must be in big-endian byte order.
         let header_bytes = header.to_be_bytes();
 
@@ -347,6 +328,25 @@ impl IPv4Header {
         !(sum as u16)
     }
 
+    /// Returns the memory representation of the [IPv4Header] as a byte array in
+    /// big-endian (network) byte order.
+    pub fn to_be_bytes(&self) -> [u8; Self::MIN_HEADER_LEN as usize] {
+        let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
+
+        raw_header[0] = self.version_ihl;
+        raw_header[1] = self.tos;
+        raw_header[2..4].copy_from_slice(&self.total_len.to_be_bytes());
+        raw_header[4..6].copy_from_slice(&self.id.to_be_bytes());
+        raw_header[6..8].copy_from_slice(&self.flags_and_offset.to_be_bytes());
+        raw_header[8] = self.ttl;
+        raw_header[9] = self.protocol.into();
+        raw_header[10..12].copy_from_slice(&self.header_checksum.to_be_bytes());
+        raw_header[12..16].copy_from_slice(&self.src_addr);
+        raw_header[16..20].copy_from_slice(&self.dst_addr);
+
+        raw_header
+    }
+
     /// Reads the [IPv4Header] from the given input stream.
     ///
     /// # Errors
@@ -354,30 +354,28 @@ impl IPv4Header {
     /// Returns an error if reading from the input stream fails or invalid data
     /// is provided.
     pub fn read<T: io::Read>(input: &mut T) -> Result<Self, String> {
-        let mut header_raw = [0u8; 20];
+        let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
         input
-            .read_exact(&mut header_raw[..])
+            .read_exact(&mut raw_header[..])
             .map_err(|err| format!("failed to parse IPv4 header from input: {err}"))?;
 
-        IPv4Header::try_from(&header_raw[..])
+        IPv4Header::try_from(&raw_header[..])
     }
 
     /// Writes the [IPv4Header] to the given output stream.
     ///
-    /// Before writing, the header checksum is automatically computed.
+    /// # Notes
+    ///
+    /// The checksum is NOT automatically computed. It is the callers
+    /// responsibility to ensure the checksum is computed before writing to an
+    /// output stream.
     ///
     /// # Errors
     ///
     /// Returns an error if writing to the output stream fails.
     pub fn write<T: io::Write>(&self, output: &mut T) -> Result<(), String> {
-        // Only copying 20 bytes...
-        let mut header = *self;
-        header.header_checksum = self.compute_header_checksum();
-
-        let raw_header = header.to_be_bytes();
-
         output
-            .write_all(&raw_header)
+            .write_all(&self.to_be_bytes())
             .map_err(|err| format!("failed to write IPv4 header to output: {err}"))?;
 
         Ok(())
@@ -390,7 +388,7 @@ impl TryFrom<&[u8]> for IPv4Header {
     fn try_from(header_raw: &[u8]) -> Result<Self, Self::Error> {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
             return Err(format!(
-                "failed to parse IPv4 header: expected header length: {} provided header length: {}",
+                "failed to parse IPv4 header from input: expected header length: {} provided header length: {}",
                 Self::MIN_HEADER_LEN,
                 header_raw.len()
             ));
@@ -400,14 +398,14 @@ impl TryFrom<&[u8]> for IPv4Header {
 
         if (version_ihl >> 4) != 4 {
             return Err(format!(
-                "failed to parse IPv4 header: expected version number: 4 provided version number: {}",
+                "failed to parse into IPv4 header from input: expected version number: 4 provided version number: {}",
                 version_ihl >> 4
             ));
         }
 
         if (version_ihl & 0xF) != 5 {
             return Err(format!(
-                "failed to parse IPv4 header: expected ihl value: 5 provided ihl value: {}",
+                "failed to parse into IPv4 header from input: expected ihl value: 5 provided ihl value: {}",
                 version_ihl & 0xF
             ));
         }
@@ -420,15 +418,15 @@ impl TryFrom<&[u8]> for IPv4Header {
             flags_and_offset: u16::from_be_bytes([header_raw[6], header_raw[7]]),
             ttl: header_raw[8],
             protocol: Protocol::try_from(header_raw[9])
-                .map_err(|err| format!("failed to parse IPv4 header: {err}"))?,
+                .map_err(|err| format!("failed to parse into IPv4 header from input: {err}"))?,
             header_checksum: u16::from_be_bytes([header_raw[10], header_raw[11]]),
-            src: [
+            src_addr: [
                 header_raw[12],
                 header_raw[13],
                 header_raw[14],
                 header_raw[15],
             ],
-            dst: [
+            dst_addr: [
                 header_raw[16],
                 header_raw[17],
                 header_raw[18],
@@ -448,15 +446,15 @@ impl Default for IPv4Header {
             // Bit 1 = 1 (Don't Fragment)
             // Bit 2 = 0 (Last Fragment)
             //
-            // Fragment offset = 0
+            // Fragment Offset = 0
             flags_and_offset: 0b0100000000000000,
             header_checksum: 0,
 
             total_len: Self::MIN_HEADER_LEN,
             ttl: 0,
             protocol: Protocol::TCP,
-            src: [0; 4],
-            dst: [0; 4],
+            src_addr: [0; 4],
+            dst_addr: [0; 4],
         }
     }
 }
