@@ -8,3 +8,5 @@ TCP implementation in user-space designed for learning purposes.
 - [Internet Protocol](https://www.rfc-editor.org/rfc/rfc791)
 - [Assigned Numbers](https://www.rfc-editor.org/rfc/rfc1700)
 - [Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc793)
+- [TCP Extensions for High Performance](https://www.rfc-editor.org/rfc/rfc1323) 
+- [Requirements for Internet Hosts -- Communication Layers](https://www.rfc-editor.org/rfc/rfc1122)

@@ -440,6 +440,17 @@ impl TryFrom<&[u8]> for TCPHeader {
             ));
         }
 
+        let offset_and_control_bits = u16::from_be_bytes([header_raw[12], header_raw[13]]);
+
+        let data_offset = offset_and_control_bits >> 12;
+        if data_offset < Self::MIN_DATA_OFFSET {
+            return Err(format!(
+                "failed to parse TCP header from input: expected data offset to be greater than: {} provided data offset: {}",
+                Self::MIN_DATA_OFFSET,
+                data_offset
+            ));
+        }
+
         Ok(Self {
             src_port: u16::from_be_bytes([header_raw[0], header_raw[1]]),
             dst_port: u16::from_be_bytes([header_raw[2], header_raw[3]]),
@@ -455,25 +466,18 @@ impl TryFrom<&[u8]> for TCPHeader {
                 header_raw[10],
                 header_raw[11],
             ]),
-            offset_and_control_bits: {
-                let offset_and_control_bits = u16::from_be_bytes([header_raw[12], header_raw[13]]);
-
-                // Data offset is stored in the higher 4 bits.
-                if offset_and_control_bits >> 12 < Self::MIN_DATA_OFFSET {
-                    return Err(format!(
-                        "failed to parse TCP header from input: expected data offset to be greater than: {} provided data offset: {}",
-                        Self::MIN_DATA_OFFSET,
-                        offset_and_control_bits >> 12
-                    ));
-                }
-
-                offset_and_control_bits
-            },
+            offset_and_control_bits,
             window: u16::from_be_bytes([header_raw[14], header_raw[15]]),
             checksum: u16::from_be_bytes([header_raw[16], header_raw[17]]),
             urgent_pointer: u16::from_be_bytes([header_raw[18], header_raw[19]]),
-            options: TCPOptions::try_from(&header_raw[20..])
-                .map_err(|err| format!("failed to parse TCP header from input: {err}"))?,
+            options: {
+                if data_offset > Self::MIN_DATA_OFFSET {
+                    TCPOptions::try_from(&header_raw[20..(data_offset << 2) as usize])
+                        .map_err(|err| format!("failed to parse TCP header from input: {err}"))?
+                } else {
+                    TCPOptions::new()
+                }
+            },
         })
     }
 }
@@ -664,10 +668,9 @@ pub enum OptionKind {
 impl From<u8> for OptionKind {
     fn from(val: u8) -> Self {
         match val {
-            0 => Self::EOL,
             1 => Self::NOP,
             2 => Self::MSS,
-            _ => unreachable!(),
+            _ => Self::EOL,
         }
     }
 }

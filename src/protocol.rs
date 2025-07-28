@@ -6,7 +6,19 @@ use crate::parse::{IPv4Header, Protocol, TCPHeader};
 use crate::tun_tap::{MTU, Tun};
 use crate::{info, warn};
 
-/// Represents of a unique TCP connection.
+/// Maximum Segment Size Option (RFC 1122 4.2.2.6).
+///
+/// TCP MUST implement both sending and receiving the Maximum Segment Size
+/// option [TCP:4].
+///
+/// TCP SHOULD send an MSS (Maximum Segment Size) option in every SYN segment
+/// when its receive MSS differs from the default 536, and MAY send it always.
+///
+/// If an MSS option is not received at connection setup, TCP MUST assume a
+/// default send MSS of 536 (576-40) [TCP:4].
+const DEFAULT_MSS: u16 = 536;
+
+/// Representation of a unique TCP connection.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Socket {
     /// Source Address and Port.
@@ -67,6 +79,8 @@ pub struct SendSeqSpace {
     wl2: u32,
     /// ISS     - initial send sequence number
     iss: u32,
+    /// MSS     - maximum segment size (not part of Send Seq Space in RFC 793).
+    peer_mss: u16,
 }
 
 /// Receive Sequence Space (RFC 793 3.2).
@@ -169,35 +183,48 @@ impl TCB {
         let conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
             send_seq_sp: SendSeqSpace {
+                // Since no segments have been acknowledged yet, starts at `iss`.
                 una: iss,
+                // The next sequence number to be sent.
                 nxt: iss + 1,
                 wnd,
                 up: 0,
-                wl1: iss,
+                // Since the send window has not been updated yet, they can be
+                // zeroed out.
+                wl1: 0,
                 wl2: 0,
+                // What sequence number we choose to start from.
                 iss,
+                // Keep track of any MSS the client may have included in TCP
+                // options.
+                peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
             },
             recv_seq_sp: RecvSeqSpace {
+                // The next sequence number we expect from the client.
                 nxt: tcph.seq_number() + 1,
                 wnd: tcph.window(),
                 up: tcph.urgent_pointer(),
+                // What sequence number the client chooses to start from.
                 irs: tcph.seq_number(),
             },
         };
 
-        let src = iph.dst();
-        let dst = iph.src();
-        let src_port = tcph.dst_port();
-        let dst_port = tcph.src_port();
-
-        let mut syn_ack = TCPHeader::new(src_port, dst_port, conn.send_seq_sp.iss, wnd);
+        let mut syn_ack =
+            TCPHeader::new(tcph.dst_port(), tcph.src_port(), conn.send_seq_sp.iss, wnd);
 
         syn_ack.ack_number = conn.recv_seq_sp.nxt;
         syn_ack.set_syn();
         syn_ack.set_ack();
 
-        let mut ip = IPv4Header::new(src, dst, syn_ack.header_len() as u16, ttl, Protocol::TCP)?;
+        let mut ip = IPv4Header::new(
+            iph.dst(),
+            iph.src(),
+            syn_ack.header_len() as u16,
+            ttl,
+            Protocol::TCP,
+        )?;
 
+        // Checksum must be computed and set before sending to client.
         ip.header_checksum = ip.compute_header_checksum();
         syn_ack.checksum = syn_ack.compute_checksum(&ip, &[]);
 
