@@ -25,8 +25,6 @@ use crate::parse::IPv4Header;
 ///    |                             data                              |
 ///    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///   
-///                            TCP Header Format
-///   
 ///                                Figure 3.
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +41,7 @@ pub struct TCPHeader {
     /// If the ACK control bit is set this field contains the value of the next
     /// sequence number the sender of the segment is expecting to receive. Once
     /// a connection is established this is always sent.
-    ack_number: u32,
+    pub(crate) ack_number: u32,
     /// Data Offset: 4 bits
     ///
     ///     The number of 32 bit words in the TCP Header. This indicates where
@@ -96,7 +94,7 @@ pub struct TCPHeader {
     /// The TCP Length is the TCP header length plus the data length in octets
     /// (this is not an explicitly transmitted quantity, but is computed), and
     /// it does not count the 12 octets of the pseudo header.
-    checksum: u16,
+    pub(crate) checksum: u16,
     /// This field communicates the current value of the urgent pointer as a
     /// positive offset from the sequence number in this segment. The urgent
     /// pointer points to the sequence number of the octet following the urgent
@@ -194,10 +192,23 @@ impl TCPHeader {
         (self.offset_and_control_bits >> 5) & 1 == 1
     }
 
+    /// Sets the URG (Urgent) control bit in the [TCPHeader] if not already set.
+    pub fn set_urg(&mut self) {
+        // Sets the 5th bit from the LSB (counting from 0).
+        self.offset_and_control_bits |= 1 << 5;
+    }
+
     /// Checks if the ACK (Acknowledgment) control bit is set in the [TCPHeader].
     pub fn ack(&self) -> bool {
         // Stored as the 4th bit from the LSB (counting from 0).
         (self.offset_and_control_bits >> 4) & 1 == 1
+    }
+
+    /// Sets the ACK (Acknowledgment) control bit in the [TCPHeader] if not
+    /// already set.
+    pub fn set_ack(&mut self) {
+        // Sets the 4th bit from the LSB (counting from 0).
+        self.offset_and_control_bits |= 1 << 4;
     }
 
     /// Checks if the PSH (Push) control bit is set in the [TCPHeader].
@@ -206,10 +217,22 @@ impl TCPHeader {
         (self.offset_and_control_bits >> 3) & 1 == 1
     }
 
+    /// Sets the PSH (Push) control bit in the [TCPHeader] if not already set.
+    pub fn set_psh(&mut self) {
+        // Sets the 3rd bit from the LSB (counting from 0).
+        self.offset_and_control_bits |= 1 << 3;
+    }
+
     /// Checks if the RST (Reset) control bit is set in the [TCPHeader].
     pub fn rst(&self) -> bool {
         // Stored as the 2nd bit from the LSB (counting from 0).
         (self.offset_and_control_bits >> 2) & 1 == 1
+    }
+
+    /// Sets the RST (Reset) control bit in the [TCPHeader] if not already set.
+    pub fn set_rst(&mut self) {
+        // Sets the 2nd bit from the LSB (counting from 0).
+        self.offset_and_control_bits |= 1 << 2;
     }
 
     /// Checks if the SYN (Synchronize) control bit is set in the [TCPHeader].
@@ -218,10 +241,23 @@ impl TCPHeader {
         (self.offset_and_control_bits >> 1) & 1 == 1
     }
 
+    /// Sets the SYN (Synchronize) control bit in the [TCPHeader] if not already
+    /// set.
+    pub fn set_syn(&mut self) {
+        // Sets the 1st bit from the LSB (counting from 0).
+        self.offset_and_control_bits |= 1 << 1;
+    }
+
     /// Checks if the FIN (Finish) control bit is set in the [TCPHeader].
     pub fn fin(&self) -> bool {
         // Stored as the LSB.
         self.offset_and_control_bits & 1 == 1
+    }
+
+    /// Sets the FIN (Finish) control bit in the [TCPHeader] if not already set.
+    pub fn set_fin(&mut self) {
+        // Sets the LSB.
+        self.offset_and_control_bits |= 1;
     }
 
     /// Returns the Window field from the [TCPHeader].
@@ -505,6 +541,7 @@ impl TCPOptions {
                     // Read the actual MSS value.
                     //
                     // ```text
+                    //          1        2        3         4
                     //        +--------+--------+---------+--------+
                     //        |00000010|00000100|   max seg size   |
                     //        +--------+--------+---------+--------+

@@ -5,4 +5,4 @@
 //! user space program.
 
 mod tun;
-pub use tun::Tun;
+pub use tun::{MTU, Tun};

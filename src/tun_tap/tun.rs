@@ -5,6 +5,9 @@ use std::mem;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use std::ptr;
 
+/// The Maximum Transmission Unit (MTU) for the TUN interface.
+pub const MTU: usize = 1500;
+
 /// Represents a TUN (network TUNnel) interface, a virtual network device that
 /// acts as a software loopback for transferring IP packets between user space
 /// and the kernel, operating at layer 3 of the OSI model.

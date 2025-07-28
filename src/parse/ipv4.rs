@@ -19,8 +19,6 @@ use std::io;
 ///   |                    Options                    |    Padding    |
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///
-///                    Example Internet Datagram Header
-///
 ///                               Figure 4.
 /// ```
 ///
@@ -108,7 +106,7 @@ pub struct IPv4Header {
     /// A checksum on the header only. Since some header fields change
     /// (e.g., time to live), this is recomputed and verified at each point that
     /// the internet header is processed.
-    header_checksum: u16,
+    pub(crate) header_checksum: u16,
     /// The source address.
     src_addr: [u8; 4],
     /// The destination address.
