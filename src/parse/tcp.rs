@@ -292,6 +292,30 @@ impl TCPHeader {
         self.options
     }
 
+    /// Sets the Maximum Segment Size (MSS) value for the [TCPHeader].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is not enough space in the option buffer to
+    /// append the MSS option.
+    pub fn set_option_mss(&mut self, mss: u16) -> Result<(), String> {
+        self.options.set_mss(mss)?;
+
+        // Convert options length to the number of 32-bit words it represents,
+        // and add it to the previous data offset.
+        let new_data_offset = ((self.options.len() >> 2) as u8 + self.data_offset()) as u16;
+
+        // Clear the higher 4-bits (clear previous data offset).
+        self.offset_and_control_bits &= 0x0FFF;
+
+        // Clear the higher 12-bits of the options length and shift the new
+        // offset into the higher 4-bits, then combine with the previously
+        // cleared offset.
+        self.offset_and_control_bits |= (new_data_offset & 0x000F) << 12;
+
+        Ok(())
+    }
+
     /// Returns the length of the [TCPHeader] in bytes, including options.
     pub fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN as usize + self.options.len()
@@ -570,6 +594,36 @@ impl TCPOptions {
         }
 
         None
+    }
+
+    /// Sets the Maximum Segment Size (MSS) value for the [TCPOptions], appending
+    /// it to the current options buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is not enough space in the option buffer to
+    /// append the MSS option.
+    pub fn set_mss(&mut self, mss: u16) -> Result<(), String> {
+        let opts_len = self.len();
+
+        if (opts_len + 4) as u16 > Self::MAX_OPTIONS_LEN {
+            return Err(format!(
+                "failed to append MSS option to buffer: buffer length if appended {}, maximum allowed buffer length: {}",
+                opts_len + 4,
+                Self::MAX_OPTIONS_LEN
+            ));
+        }
+
+        let mut mss_option = [0u8; 4];
+
+        mss_option[0] = OptionKind::MSS as u8;
+        mss_option[1] = 0x04;
+        mss_option[2..4].copy_from_slice(&mss.to_be_bytes());
+
+        self.buf[opts_len..opts_len + 4].copy_from_slice(&mss_option);
+        self.len += 4;
+
+        Ok(())
     }
 
     /// Returns the length of the [TCPOptions] in bytes.

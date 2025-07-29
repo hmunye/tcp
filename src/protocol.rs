@@ -208,6 +208,10 @@ impl TCB {
 
         // Acknowledge the client's SYN.
         syn_ack.set_ack_number(conn.recv.nxt);
+
+        // Set our MSS option value for the client to adhere to.
+        syn_ack.set_option_mss(1460)?;
+
         syn_ack.set_syn();
         syn_ack.set_ack();
 
@@ -417,8 +421,8 @@ impl TCB {
                     ));
                 }
 
-                // Send window slides to the right since the SYN segment sent
                 self.state = ConnectionState::ESTABLISHED;
+                // Send window slides to the right since the SYN segment sent
                 // was acknowledged.
                 self.send.una = ackn;
             }
