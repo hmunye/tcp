@@ -5,7 +5,7 @@ use std::process;
 
 use tcp::parse::{IPv4Header, Protocol, TCPHeader};
 use tcp::protocol::{Socket, TCB};
-use tcp::tun_tap::{self, MTU};
+use tcp::tun_tap::{self, MTU_SIZE};
 use tcp::{error, info, warn};
 
 fn main() -> io::Result<()> {
@@ -14,7 +14,7 @@ fn main() -> io::Result<()> {
         process::exit(1);
     });
 
-    let mut buf = [0u8; MTU];
+    let mut buf = [0u8; MTU_SIZE];
 
     info!("interface name: {}", nic.name());
 
@@ -38,10 +38,9 @@ fn main() -> io::Result<()> {
 
                         let payload = &buf[iph.header_len() + tcph.header_len()..nbytes];
 
-                        match connections.entry(Socket {
-                            src: (src.into(), src_port),
-                            dst: (dst.into(), dst_port),
-                        }) {
+                        match connections
+                            .entry(Socket::new((src.into(), src_port), (dst.into(), dst_port)))
+                        {
                             Entry::Vacant(entry) => match TCB::on_conn_req(&mut nic, &iph, &tcph) {
                                 Ok(conn) => {
                                     entry.insert(conn);

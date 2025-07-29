@@ -41,7 +41,7 @@ pub struct TCPHeader {
     /// If the ACK control bit is set this field contains the value of the next
     /// sequence number the sender of the segment is expecting to receive. Once
     /// a connection is established this is always sent.
-    pub(crate) ack_number: u32,
+    ack_number: u32,
     /// Data Offset: 4 bits
     ///
     ///     The number of 32 bit words in the TCP Header. This indicates where
@@ -94,7 +94,7 @@ pub struct TCPHeader {
     /// The TCP Length is the TCP header length plus the data length in octets
     /// (this is not an explicitly transmitted quantity, but is computed), and
     /// it does not count the 12 octets of the pseudo header.
-    pub(crate) checksum: u16,
+    checksum: u16,
     /// This field communicates the current value of the urgent pointer as a
     /// positive offset from the sequence number in this segment. The urgent
     /// pointer points to the sequence number of the octet following the urgent
@@ -178,6 +178,12 @@ impl TCPHeader {
     /// Returns the Acknowledgment Number field from the [TCPHeader].
     pub fn ack_number(&self) -> u32 {
         self.ack_number
+    }
+
+    /// Sets the Acknowledgment Number field of the [TCPHeader] with the
+    /// provided value.
+    pub fn set_ack_number(&mut self, ack: u32) {
+        self.ack_number = ack;
     }
 
     /// Returns the Data Offset field from the [TCPHeader].
@@ -268,6 +274,12 @@ impl TCPHeader {
     /// Returns the Checksum field from the [TCPHeader].
     pub fn checksum(&self) -> u16 {
         self.checksum
+    }
+
+    /// Computes and sets the Checksum field of the [TCPHeader] with the
+    /// provided [IPv4Header] and payload.
+    pub fn set_checksum(&mut self, ip_header: &IPv4Header, payload: &[u8]) {
+        self.checksum = self.compute_checksum(ip_header, payload);
     }
 
     /// Returns the Urgent Pointer field from the [TCPHeader].

@@ -3,16 +3,10 @@
 use std::net::Ipv4Addr;
 
 use crate::parse::{IPv4Header, Protocol, TCPHeader};
-use crate::tun_tap::{MTU, Tun};
+use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{info, warn};
 
 /// Maximum Segment Size Option (RFC 1122 4.2.2.6).
-///
-/// TCP MUST implement both sending and receiving the Maximum Segment Size
-/// option [TCP:4].
-///
-/// TCP SHOULD send an MSS (Maximum Segment Size) option in every SYN segment
-/// when its receive MSS differs from the default 536, and MAY send it always.
 ///
 /// If an MSS option is not received at connection setup, TCP MUST assume a
 /// default send MSS of 536 (576-40) [TCP:4].
@@ -22,9 +16,9 @@ const DEFAULT_MSS: u16 = 536;
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Socket {
     /// Source Address and Port.
-    pub src: (Ipv4Addr, u16),
+    src: (Ipv4Addr, u16),
     /// Destination Address and Port.
-    pub dst: (Ipv4Addr, u16),
+    dst: (Ipv4Addr, u16),
 }
 
 impl Socket {
@@ -45,6 +39,9 @@ pub struct TCB {
     send_seq_sp: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
     recv_seq_sp: RecvSeqSpace,
+    /// Maximum Segment Size (MSS).
+    #[allow(dead_code)]
+    peer_mss: u16,
 }
 
 /// Send Sequence Space (RFC 793 3.2).
@@ -64,6 +61,7 @@ pub struct TCB {
 ///                               Figure 4.
 /// ```
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SendSeqSpace {
     /// SND.UNA - send unacknowledged
     una: u32,
@@ -79,8 +77,6 @@ pub struct SendSeqSpace {
     wl2: u32,
     /// ISS     - initial send sequence number
     iss: u32,
-    /// MSS     - maximum segment size (not part of Send Seq Space in RFC 793).
-    peer_mss: u16,
 }
 
 /// Receive Sequence Space (RFC 793 3.2).
@@ -100,6 +96,7 @@ pub struct SendSeqSpace {
 ///                               Figure 5.
 /// ```
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RecvSeqSpace {
     /// RCV.NXT - receive next
     nxt: u32,
@@ -156,22 +153,21 @@ impl TCB {
     /// This function is responsible for processing incoming TCP segments that
     /// do not have an existing connection state. When a TCP segment with the
     /// `SYN` flag set is received, it will create a new connection state and
-    /// generate and send a `SYN-ACK` response segment to acknowledge the
-    /// connection request.
+    /// send a `SYN-ACK` response segment to acknowledge the connection request.
     ///
     /// # Errors
     ///
     /// Returns an error if the incoming segment does not have the SYN control
-    /// bit set, if the IPv4 header could not be created, or if the constructed
-    /// SYN_ACK segment could not be written to the client.
+    /// bit set or if the constructed SYN_ACK segment could not be written to
+    /// the client.
     pub fn on_conn_req(nic: &mut Tun, iph: &IPv4Header, tcph: &TCPHeader) -> Result<Self, String> {
         TCB::log_packet(iph, tcph, &[]);
 
-        if !tcph.syn() {
+        if !tcph.syn() || tcph.ack() {
             return Err("did not receive a SYN packet to begin three-way handshake".into());
         }
 
-        let mut buf = [0u8; MTU];
+        let mut buf = [0u8; MTU_SIZE];
 
         // Initial Send Sequence Number
         let iss = 0;
@@ -183,21 +179,18 @@ impl TCB {
         let conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
             send_seq_sp: SendSeqSpace {
-                // Since no segments have been acknowledged yet, starts at `iss`.
+                // Since no segments have been acknowledged yet, set to `iss`.
                 una: iss,
                 // The next sequence number to be sent.
                 nxt: iss + 1,
                 wnd,
                 up: 0,
-                // Since the send window has not been updated yet, they can be
-                // zeroed out.
-                wl1: 0,
+                // Since the send window has not been updated yet, their is no
+                // previous sequence or acknowledgment numbers.
+                wl1: iss,
                 wl2: 0,
                 // What sequence number we choose to start from.
                 iss,
-                // Keep track of any MSS the client may have included in TCP
-                // options.
-                peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
             },
             recv_seq_sp: RecvSeqSpace {
                 // The next sequence number we expect from the client.
@@ -207,12 +200,15 @@ impl TCB {
                 // What sequence number the client chooses to start from.
                 irs: tcph.seq_number(),
             },
+            // Keep track of the MSS the client may have included in TCP options.
+            peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
         };
 
         let mut syn_ack =
             TCPHeader::new(tcph.dst_port(), tcph.src_port(), conn.send_seq_sp.iss, wnd);
 
-        syn_ack.ack_number = conn.recv_seq_sp.nxt;
+        // Acknowledge the client's SYN.
+        syn_ack.set_ack_number(conn.recv_seq_sp.nxt);
         syn_ack.set_syn();
         syn_ack.set_ack();
 
@@ -225,8 +221,8 @@ impl TCB {
         )?;
 
         // Checksum must be computed and set before sending to client.
-        ip.header_checksum = ip.compute_header_checksum();
-        syn_ack.checksum = syn_ack.compute_checksum(&ip, &[]);
+        ip.set_header_checksum();
+        syn_ack.set_checksum(&ip, &[]);
 
         let nbytes = {
             let mut unwritten = &mut buf[..];
@@ -237,7 +233,7 @@ impl TCB {
                 .write(&mut unwritten)
                 .map_err(|err| format!("failed to write SYN_ACK response: {err}"))?;
 
-            MTU - unwritten.len()
+            MTU_SIZE - unwritten.len()
         };
 
         nic.send(&buf[..nbytes])
@@ -304,9 +300,6 @@ impl TCB {
     ///                               Figure 6.
     ///
     /// ```
-    ///
-    /// # Errors
-    ///
     pub fn on_packet(
         &mut self,
         _nic: &mut Tun,
@@ -316,15 +309,15 @@ impl TCB {
     ) -> Result<(), String> {
         TCB::log_packet(iph, tcph, payload);
 
-        loop {
-            match self.state {
-                _ => {
-                    warn!(
-                        "connection state {:?} is not currently being handled",
-                        self.state
-                    );
-                    break;
-                }
+        match self.state {
+            ConnectionState::SYN_RECEIVED => {
+                return Ok(());
+            }
+            _ => {
+                warn!(
+                    "connection state {:?} is not currently being handled",
+                    self.state
+                );
             }
         }
 
@@ -343,7 +336,7 @@ impl TCB {
         );
 
         info!(
-            "tcp segment | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?}, payload: {} bytes",
+            "tcp segment | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?}",
             tcph.src_port(),
             tcph.dst_port(),
             tcph.seq_number(),
@@ -359,9 +352,8 @@ impl TCB {
             tcph.checksum(),
             tcph.compute_checksum(iph, payload) == tcph.checksum(),
             tcph.options().mss(),
-            payload.len()
         );
 
-        info!("payload bytes: {:x?}", payload);
+        info!("read {} bytes of payload: {:x?}", payload.len(), payload);
     }
 }

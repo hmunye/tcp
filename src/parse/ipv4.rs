@@ -106,7 +106,7 @@ pub struct IPv4Header {
     /// A checksum on the header only. Since some header fields change
     /// (e.g., time to live), this is recomputed and verified at each point that
     /// the internet header is processed.
-    pub(crate) header_checksum: u16,
+    header_checksum: u16,
     /// The source address.
     src_addr: [u8; 4],
     /// The destination address.
@@ -230,6 +230,11 @@ impl IPv4Header {
     /// Returns the Header Checksum field from the [IPv4Header].
     pub fn header_checksum(&self) -> u16 {
         self.header_checksum
+    }
+
+    /// Computes and sets the Header Checksum field of the [IPv4Header].
+    pub fn set_header_checksum(&mut self) {
+        self.header_checksum = self.compute_header_checksum();
     }
 
     /// Returns the Source Address field from the [IPv4Header].
