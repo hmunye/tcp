@@ -36,9 +36,9 @@ pub struct TCB {
     /// Current state of the TCP connection.
     state: ConnectionState,
     /// Send Sequence Space for the TCP connection.
-    send_seq_sp: SendSeqSpace,
+    send: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
-    recv_seq_sp: RecvSeqSpace,
+    recv: RecvSeqSpace,
     /// Maximum Segment Size (MSS).
     #[allow(dead_code)]
     peer_mss: u16,
@@ -164,7 +164,7 @@ impl TCB {
         TCB::log_packet(iph, tcph, &[]);
 
         if !tcph.syn() || tcph.ack() {
-            return Err("did not receive a SYN packet to begin three-way handshake".into());
+            return Err("did not receive a SYN segment to begin three-way handshake".into());
         }
 
         let mut buf = [0u8; MTU_SIZE];
@@ -178,7 +178,7 @@ impl TCB {
 
         let conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
-            send_seq_sp: SendSeqSpace {
+            send: SendSeqSpace {
                 // Since no segments have been acknowledged yet, set to `iss`.
                 una: iss,
                 // The next sequence number to be sent.
@@ -192,7 +192,7 @@ impl TCB {
                 // What sequence number we choose to start from.
                 iss,
             },
-            recv_seq_sp: RecvSeqSpace {
+            recv: RecvSeqSpace {
                 // The next sequence number we expect from the client.
                 nxt: tcph.seq_number() + 1,
                 wnd: tcph.window(),
@@ -204,11 +204,10 @@ impl TCB {
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
         };
 
-        let mut syn_ack =
-            TCPHeader::new(tcph.dst_port(), tcph.src_port(), conn.send_seq_sp.iss, wnd);
+        let mut syn_ack = TCPHeader::new(tcph.dst_port(), tcph.src_port(), conn.send.iss, wnd);
 
         // Acknowledge the client's SYN.
-        syn_ack.set_ack_number(conn.recv_seq_sp.nxt);
+        syn_ack.set_ack_number(conn.recv.nxt);
         syn_ack.set_syn();
         syn_ack.set_ack();
 
@@ -228,16 +227,16 @@ impl TCB {
             let mut unwritten = &mut buf[..];
 
             ip.write(&mut unwritten)
-                .map_err(|err| format!("failed to write SYN_ACK response: {err}"))?;
+                .map_err(|err| format!("failed to write SYN_ACK segment: {err}"))?;
             syn_ack
                 .write(&mut unwritten)
-                .map_err(|err| format!("failed to write SYN_ACK response: {err}"))?;
+                .map_err(|err| format!("failed to write SYN_ACK segment: {err}"))?;
 
             MTU_SIZE - unwritten.len()
         };
 
         nic.send(&buf[..nbytes])
-            .map_err(|err| format!("failed to write SYN_ACK response: {err}"))?;
+            .map_err(|err| format!("failed to write SYN_ACK segment: {err}"))?;
 
         Ok(conn)
     }
@@ -309,9 +308,119 @@ impl TCB {
     ) -> Result<(), String> {
         TCB::log_packet(iph, tcph, payload);
 
+        let seqn = tcph.seq_number();
+        let ackn = tcph.ack_number();
+
+        // RFC 793 (3.3)
+        //
+        // When data is received the following comparisons are needed:
+        //
+        // ```text
+        //    Segment Receive  Test
+        //    Length  Window
+        //    ------- -------  -------------------------------------------
+        //
+        //       0       0     SEG.SEQ = RCV.NXT
+        //
+        //       0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+        //
+        //      >0       0     not acceptable
+        //
+        //      >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+        //                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+        // ```
+
+        // Segment length includes the payload length and SYN and FIN virtual bytes.
+        let seg_len =
+            payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
+
+        let nxt_wnd = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
+
+        match seg_len {
+            0 => match self.recv.wnd {
+                0 => {
+                    // Case 1: SEG.SEQ = RCV.NXT
+                    if seqn != self.recv.nxt {
+                        return Err(format!(
+                            "invalid SEQ number {}: expected SEQ number {}",
+                            seqn, self.recv.nxt
+                        ));
+                    }
+                }
+                _ => {
+                    // Case 2: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+                    if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, nxt_wnd) {
+                        return Err(format!(
+                            "invalid SEQ number {}: expected SEQ number between {} and {} (exclusive of {})",
+                            seqn,
+                            self.recv.nxt.wrapping_sub(1),
+                            nxt_wnd,
+                            nxt_wnd
+                        ));
+                    }
+                }
+            },
+            len => match self.recv.wnd {
+                0 => {
+                    // Case 3: not acceptable
+                    return Err(format!(
+                        "segment length of {len} with a receive window of 0",
+                    ));
+                }
+                _ => {
+                    // Case 4: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+                    //      or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+                    if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, nxt_wnd)
+                        && !is_between_wrapped(
+                            self.recv.nxt.wrapping_sub(1),
+                            seqn + len - 1,
+                            nxt_wnd,
+                        )
+                    {
+                        return Err(format!(
+                            "invalid SEQ number {}: expected first or last SEQ number occupied by the segment between {} and {} (exclusive of {})",
+                            seqn,
+                            self.recv.nxt.wrapping_sub(1),
+                            nxt_wnd,
+                            nxt_wnd
+                        ));
+                    }
+                }
+            },
+        }
+
         match self.state {
             ConnectionState::SYN_RECEIVED => {
-                return Ok(());
+                if !tcph.ack() {
+                    return Err(format!(
+                        "expected ACK segement while in {:?} state",
+                        self.state
+                    ));
+                }
+
+                // RFC 793 (3.3)
+                //
+                // A new acknowledgment (called an "acceptable ack"), is one for
+                // which the inequality below holds:
+                //
+                // ```text
+                //    SND.UNA < SEG.ACK =< SND.NXT
+                // ```
+
+                if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+                    return Err(format!(
+                        "invalid ACK number {}: expected ACK number between {} and {} (exclusive of {})",
+                        ackn,
+                        self.send.una,
+                        self.send.nxt.wrapping_add(1),
+                        self.send.una
+                    ));
+                }
+
+                // Send window slides to the right since the SYN segment sent
+                self.state = ConnectionState::ESTABLISHED;
+                // was acknowledged.
+                self.send.una = ackn;
             }
             _ => {
                 warn!(
@@ -354,6 +463,29 @@ impl TCB {
             tcph.options().mss(),
         );
 
-        info!("read {} bytes of payload: {:x?}", payload.len(), payload);
+        info!(
+            "read {} bytes of segment payload: {:x?}",
+            payload.len(),
+            payload
+        );
     }
+}
+
+#[inline]
+fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
+    // RFC 1323 (2.2):
+    //
+    // TCP determines if a data segment is "old" or "new" by testing whether
+    // its sequence number is within 2**31 bytes of the left edge of the window,
+    // and if it is not, discarding the data as "old". To insure that new data
+    // is never mistakenly considered old and vice-versa, the left edge of the
+    // sender's window has to be at most 2**31 away from the right edge of the
+    // receiver's window.
+    lhs.wrapping_sub(rhs) > (1 << 31)
+}
+
+/// Returns `true` is the value `x` is in between the values `start` and `end`,
+/// accounting for wrapping arithmetic.
+fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
+    wrapping_lt(start, x) && wrapping_lt(x, end)
 }

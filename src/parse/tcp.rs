@@ -308,7 +308,7 @@ impl TCPHeader {
 
         let mut pseudo_header = [0u8; Self::PSEUDO_HEADER_LEN];
 
-        // RFC 793 (3.1 Header Format)
+        // RFC 793 (3.1)
         //
         // ```text
         //        +--------+--------+--------+--------+
