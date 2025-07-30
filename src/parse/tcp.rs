@@ -328,11 +328,6 @@ impl TCPHeader {
     /// and payload. For purposes of computing the checksum, the value of the
     /// checksum field is zero.
     pub fn compute_checksum(&self, ip_header: &IPv4Header, payload: &[u8]) -> u16 {
-        // Only copying 20 bytes...
-        let mut tcp_header = *self;
-
-        let mut pseudo_header = [0u8; Self::PSEUDO_HEADER_LEN];
-
         // RFC 793 (3.1)
         //
         // ```text
@@ -344,17 +339,21 @@ impl TCPHeader {
         //        |  zero  |  PTCL  |    TCP Length   |
         //        +--------+--------+--------+--------+
         // ```
+        let mut pseudo_header = [0u8; Self::PSEUDO_HEADER_LEN];
+
         pseudo_header[0..4].copy_from_slice(&ip_header.src());
         pseudo_header[4..8].copy_from_slice(&ip_header.dst());
         pseudo_header[8] = 0;
         pseudo_header[9] = ip_header.protocol().into();
 
-        let tcp_len: u16 = (tcp_header.header_len() + payload.len()) as u16;
+        let tcp_len: u16 = (self.header_len() + payload.len()) as u16;
         pseudo_header[10..12].copy_from_slice(&tcp_len.to_be_bytes());
 
+        let (mut buf, nbytes) = self.to_be_bytes();
         // Checksum field must be 0 for computation.
-        tcp_header.checksum = 0;
-        let (buf, nbytes) = tcp_header.to_be_bytes();
+        buf[16] = 0x00;
+        buf[17] = 0x00;
+
         let tcp_header_bytes = &buf[..nbytes];
 
         // Chain together each byte slice so all word-sized values can be

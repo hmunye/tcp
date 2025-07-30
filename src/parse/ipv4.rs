@@ -286,13 +286,11 @@ impl IPv4Header {
     /// complement sum of all 16 bit words in the header. For purposes of
     /// computing the checksum, the value of the checksum field is zero.
     pub fn compute_header_checksum(&self) -> u16 {
-        // Only copying 20 bytes...
-        let mut header = *self;
+        let mut header_bytes = self.to_be_bytes();
 
         // Checksum field must be 0 for computation.
-        header.header_checksum = 0;
-        // Must be in big-endian byte order.
-        let header_bytes = header.to_be_bytes();
+        header_bytes[10] = 0x00;
+        header_bytes[11] = 0x00;
 
         let mut sum = 0u32;
 

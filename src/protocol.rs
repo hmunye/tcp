@@ -12,7 +12,7 @@ use crate::{info, warn};
 /// Maximum Segment Size Option (RFC 1122 4.2.2.6).
 ///
 /// If an MSS option is not received at connection setup, TCP MUST assume a
-/// default send MSS of 536 (576-40) [TCP:4].
+/// default send MSS of 536 (576-40).
 const DEFAULT_MSS: u16 = 536;
 
 const SEND_BUF_SIZE: usize = 4096;
