@@ -44,13 +44,13 @@ pub struct TCPHeader {
     ack_number: u32,
     /// Data Offset: 4 bits
     ///
-    ///     The number of 32 bit words in the TCP Header. This indicates where
-    ///     the data begins. The TCP header (even one including options) is an
-    ///     integral number of 32 bits long.
+    /// The number of 32 bit words in the TCP Header. This indicates where the
+    /// data begins. The TCP header (even one including options) is an integral
+    /// number of 32 bits long.
     ///
     /// Reserved:  6 bits
     ///
-    ///     Reserved for future use.  Must be zero.
+    /// Reserved for future use.  Must be zero.
     ///
     /// Control Bits:  6 bits (from left to right):
     ///
@@ -323,9 +323,12 @@ impl TCPHeader {
 
     /// Computes the checksum for the [TCPHeader].
     ///
-    /// The checksum is computed using the same algorithm as IPv4, with the
-    /// exception of the byte buffer being summed. The TCP checksum includes a
-    /// 12-byte pseudo header, the [TCPHeader], and the payload in its computation.
+    /// The checksum algorithm is:
+    ///
+    /// The checksum field is the 16 bit one's complement of the one's
+    /// complement sum of all 16 bit words in the pseudo header, TCP header,
+    /// and payload. For purposes of computing the checksum, the value of the
+    /// checksum field is zero.
     pub fn compute_checksum(&self, ip_header: &IPv4Header, payload: &[u8]) -> u16 {
         // Only copying 20 bytes...
         let mut tcp_header = *self;

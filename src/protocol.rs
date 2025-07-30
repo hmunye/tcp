@@ -1,5 +1,8 @@
-//! Minimal implementation of the Transmission Control Protocol (TCP).
+//! Very minimal implementation of the Transmission Control Protocol (TCP).
 
+// TODO: READ THE RFC
+
+use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 
 use crate::parse::{IPv4Header, Protocol, TCPHeader};
@@ -11,6 +14,9 @@ use crate::{info, warn};
 /// If an MSS option is not received at connection setup, TCP MUST assume a
 /// default send MSS of 536 (576-40) [TCP:4].
 const DEFAULT_MSS: u16 = 536;
+
+const SEND_BUF_SIZE: usize = 4096;
+const RECV_BUF_SIZE: usize = 4096;
 
 /// Representation of a unique TCP connection.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -36,9 +42,15 @@ pub struct TCB {
     /// Current state of the TCP connection.
     state: ConnectionState,
     /// Send Sequence Space for the TCP connection.
-    send: SendSeqSpace,
+    send_sp: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
-    recv: RecvSeqSpace,
+    recv_sp: RecvSeqSpace,
+    /// Buffer containing bytes sent to the peer.
+    #[allow(dead_code)]
+    send_buf: VecDeque<u8>,
+    /// Buffer containing bytes received from the peer.
+    #[allow(dead_code)]
+    recv_buf: VecDeque<u8>,
     /// Maximum Segment Size (MSS).
     #[allow(dead_code)]
     peer_mss: u16,
@@ -159,7 +171,7 @@ impl TCB {
     ///
     /// Returns an error if the incoming segment does not have the SYN control
     /// bit set or if the constructed SYN_ACK segment could not be written to
-    /// the client.
+    /// the peer.
     pub fn on_conn_req(nic: &mut Tun, iph: &IPv4Header, tcph: &TCPHeader) -> Result<Self, String> {
         TCB::log_packet(iph, tcph, &[]);
 
@@ -171,45 +183,53 @@ impl TCB {
 
         // Initial Send Sequence Number
         let iss = 0;
-        // Window Size
-        let wnd = 1024;
-        // Time-to-Live
-        let ttl = 64;
-
         let conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
-            send: SendSeqSpace {
-                // Since no segments have been acknowledged yet, set to `iss`.
+            send_sp: SendSeqSpace {
+                // Should be the value of the last ACK received. Since we have
+                // not sent any bytes yet, it is set to the ISS.
                 una: iss,
-                // The next sequence number to be sent.
+                // The next sequence number we will transmit to the peer.
                 nxt: iss + 1,
-                wnd,
+                // The window size that was advertised by the peer.
+                wnd: tcph.window(),
                 up: 0,
-                // Since the send window has not been updated yet, their is no
-                // previous sequence or acknowledgment numbers.
-                wl1: iss,
+                // The peer's sequence number used for last window update.
+                // Initially set to the received sequence number.
+                wl1: tcph.seq_number(),
+                // The peer's acknowledgment number used for last window update.
+                // Set to 0 since no ACK has been received.
                 wl2: 0,
                 // What sequence number we choose to start from.
                 iss,
             },
-            recv: RecvSeqSpace {
-                // The next sequence number we expect from the client.
+            recv_sp: RecvSeqSpace {
+                // The next sequence number we expect from the peer.
                 nxt: tcph.seq_number() + 1,
-                wnd: tcph.window(),
+                // The window size we advertise to the peer.
+                wnd: RECV_BUF_SIZE as u16,
                 up: tcph.urgent_pointer(),
-                // What sequence number the client chooses to start from.
+                // What sequence number the peer chooses to start from.
                 irs: tcph.seq_number(),
             },
-            // Keep track of the MSS the client may have included in TCP options.
+            send_buf: VecDeque::with_capacity(SEND_BUF_SIZE),
+            recv_buf: VecDeque::with_capacity(RECV_BUF_SIZE),
+            // Keep track of the peer's MSS that may have included in TCP
+            // options.
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
         };
 
-        let mut syn_ack = TCPHeader::new(tcph.dst_port(), tcph.src_port(), conn.send.iss, wnd);
+        let mut syn_ack = TCPHeader::new(
+            tcph.dst_port(),
+            tcph.src_port(),
+            conn.send_sp.iss,
+            conn.recv_sp.wnd,
+        );
 
-        // Acknowledge the client's SYN.
-        syn_ack.set_ack_number(conn.recv.nxt);
+        // Acknowledge the peer's SYN.
+        syn_ack.set_ack_number(conn.recv_sp.nxt);
 
-        // Set our MSS option value for the client to adhere to.
+        // Set our MSS option value for the peer to adhere to.
         syn_ack.set_option_mss(1460)?;
 
         syn_ack.set_syn();
@@ -219,11 +239,11 @@ impl TCB {
             iph.dst(),
             iph.src(),
             syn_ack.header_len() as u16,
-            ttl,
+            64,
             Protocol::TCP,
         )?;
 
-        // Checksum must be computed and set before sending to client.
+        // Checksum must be computed and set before sending to peer.
         ip.set_header_checksum();
         syn_ack.set_checksum(&ip, &[]);
 
@@ -338,33 +358,33 @@ impl TCB {
         let seg_len =
             payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
 
-        let nxt_wnd = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
+        let nxt_wnd = self.recv_sp.nxt.wrapping_add(self.recv_sp.wnd as u32);
 
         match seg_len {
-            0 => match self.recv.wnd {
+            0 => match self.recv_sp.wnd {
                 0 => {
                     // Case 1: SEG.SEQ = RCV.NXT
-                    if seqn != self.recv.nxt {
+                    if seqn != self.recv_sp.nxt {
                         return Err(format!(
                             "invalid SEQ number {}: expected SEQ number {}",
-                            seqn, self.recv.nxt
+                            seqn, self.recv_sp.nxt
                         ));
                     }
                 }
                 _ => {
                     // Case 2: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-                    if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, nxt_wnd) {
+                    if !is_between_wrapped(self.recv_sp.nxt.wrapping_sub(1), seqn, nxt_wnd) {
                         return Err(format!(
                             "invalid SEQ number {}: expected SEQ number between {} and {} (exclusive of {})",
                             seqn,
-                            self.recv.nxt.wrapping_sub(1),
+                            self.recv_sp.nxt.wrapping_sub(1),
                             nxt_wnd,
                             nxt_wnd
                         ));
                     }
                 }
             },
-            len => match self.recv.wnd {
+            len => match self.recv_sp.wnd {
                 0 => {
                     // Case 3: not acceptable
                     return Err(format!(
@@ -374,9 +394,9 @@ impl TCB {
                 _ => {
                     // Case 4: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                     //      or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
-                    if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, nxt_wnd)
+                    if !is_between_wrapped(self.recv_sp.nxt.wrapping_sub(1), seqn, nxt_wnd)
                         && !is_between_wrapped(
-                            self.recv.nxt.wrapping_sub(1),
+                            self.recv_sp.nxt.wrapping_sub(1),
                             seqn + len - 1,
                             nxt_wnd,
                         )
@@ -384,7 +404,7 @@ impl TCB {
                         return Err(format!(
                             "invalid SEQ number {}: expected first or last SEQ number occupied by the segment between {} and {} (exclusive of {})",
                             seqn,
-                            self.recv.nxt.wrapping_sub(1),
+                            self.recv_sp.nxt.wrapping_sub(1),
                             nxt_wnd,
                             nxt_wnd
                         ));
@@ -411,20 +431,20 @@ impl TCB {
                 //    SND.UNA < SEG.ACK =< SND.NXT
                 // ```
 
-                if !is_between_wrapped(self.send.una, ackn, self.send.nxt.wrapping_add(1)) {
+                if !is_between_wrapped(self.send_sp.una, ackn, self.send_sp.nxt.wrapping_add(1)) {
                     return Err(format!(
                         "invalid ACK number {}: expected ACK number between {} and {} (exclusive of {})",
                         ackn,
-                        self.send.una,
-                        self.send.nxt.wrapping_add(1),
-                        self.send.una
+                        self.send_sp.una,
+                        self.send_sp.nxt.wrapping_add(1),
+                        self.send_sp.una
                     ));
                 }
 
                 self.state = ConnectionState::ESTABLISHED;
                 // Send window slides to the right since the SYN segment sent
                 // was acknowledged.
-                self.send.una = ackn;
+                self.send_sp.una = ackn;
             }
             _ => {
                 warn!(
@@ -440,12 +460,22 @@ impl TCB {
     /// Logs the details of an incoming TCP segment.
     fn log_packet(iph: &IPv4Header, tcph: &TCPHeader, payload: &[u8]) {
         info!(
-            "ipv4 datagram | src: {:?}, dst: {:?}, chksum: 0x{:04x} (valid: {}), payload: {} bytes",
-            iph.src(),
-            iph.dst(),
+            "ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}, payload: {} bytes",
+            iph.version(),
+            iph.ihl(),
+            iph.tos(),
+            iph.total_len(),
+            iph.id(),
+            iph.dont_fragment(),
+            iph.more_fragments(),
+            iph.fragment_offset(),
+            iph.ttl(),
+            iph.protocol(),
             iph.header_checksum(),
             iph.compute_header_checksum() == iph.header_checksum(),
-            iph.payload_len().unwrap_or(u16::MAX)
+            iph.src(),
+            iph.dst(),
+            iph.payload_len()
         );
 
         info!(

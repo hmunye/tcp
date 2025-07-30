@@ -65,8 +65,8 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
-            Ok(_) => {
-                warn!("ignoring non-TCP packet");
+            Ok(p) => {
+                warn!("ignoring non-TCP ({:?}) packet", p.protocol());
             }
             Err(err) => {
                 error!("{err}");

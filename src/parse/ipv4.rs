@@ -18,8 +18,6 @@ use std::io;
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///   |                    Options                    |    Padding    |
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///
-///                               Figure 4.
 /// ```
 ///
 /// This implementation omits options (IHL is always 5).
@@ -28,9 +26,9 @@ use std::io;
 pub struct IPv4Header {
     /// The Version field indicates the format of the internet header.
     ///
-    /// Internet Header Length is the length of the internet header in 32 bit
-    /// words, and thus points to the beginning of the data. Note that the
-    /// minimum value for a correct header is 5.
+    /// Internet Header Length (IHL) is the length of the internet header in
+    /// 32 bit words, and thus points to the beginning of the data. Note that
+    /// the minimum value for a correct header is 5.
     version_ihl: u8,
     /// The Type of Service provides an indication of the abstract parameters
     /// of the quality of service desired. These parameters are to be used to
@@ -154,14 +152,14 @@ impl IPv4Header {
     ) -> Result<Self, String> {
         if payload_len > Self::MAX_PAYLOAD_LEN {
             return Err(format!(
-                "failed to create IPv4 header. provided payload length: {} maximum allowed payload length: {}",
+                "failed to create IPv4 header. provided payload length: {}, maximum allowed payload length: {}",
                 payload_len,
                 Self::MAX_PAYLOAD_LEN
             ));
         }
 
         Ok(Self {
-            total_len: payload_len + Self::MIN_HEADER_LEN,
+            total_len: Self::MIN_HEADER_LEN + payload_len,
             ttl,
             protocol,
             src_addr: src,
@@ -253,23 +251,14 @@ impl IPv4Header {
     }
 
     /// Determine the payload length of the [IPv4Header].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `total_len` is smaller than [IPv4Header::MIN_HEADER_LEN].
-    pub fn payload_len(&self) -> Result<u16, String> {
-        if self.total_len < Self::MIN_HEADER_LEN {
-            return Err(format!(
-                "failed to determine payload length of IPv4 header: total length: {} minimum header length: {}",
-                self.total_len,
-                Self::MIN_HEADER_LEN
-            ));
-        }
-
-        Ok(self.total_len - Self::MIN_HEADER_LEN)
+    pub fn payload_len(&self) -> u16 {
+        // SAFETY: Already checked during parsing that the Total Length field
+        // is greater than or equal to the IHL << 2 (20 bytes).
+        self.total_len - Self::MIN_HEADER_LEN
     }
 
-    /// Updates the [IPv4Header::total_len] field given the new payload length.
+    /// Updates the Total Length field of the [IPv4Header] given a new payload
+    /// length.
     ///
     ///
     /// # Errors
@@ -278,7 +267,7 @@ impl IPv4Header {
     pub fn set_payload_len(&mut self, payload_len: u16) -> Result<(), String> {
         if payload_len > Self::MAX_PAYLOAD_LEN {
             return Err(format!(
-                "failed to update total_len field for IPv4 header. new payload length: {} maximum allowed payload length: {}",
+                "failed to update total length for IPv4 header. new payload length: {}, maximum allowed payload length: {}",
                 payload_len,
                 Self::MAX_PAYLOAD_LEN
             ));
@@ -360,7 +349,7 @@ impl IPv4Header {
         let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
         input
             .read_exact(&mut raw_header[..])
-            .map_err(|err| format!("failed to parse IPv4 header from input: {err}"))?;
+            .map_err(|err| format!("failed to read IPv4 header from input: {err}"))?;
 
         IPv4Header::try_from(&raw_header[..])
     }
@@ -391,7 +380,7 @@ impl TryFrom<&[u8]> for IPv4Header {
     fn try_from(header_raw: &[u8]) -> Result<Self, Self::Error> {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
             return Err(format!(
-                "failed to parse IPv4 header from input: expected header length: {} provided header length: {}",
+                "failed to read IPv4 header from input: expected header length: {}, provided header length: {}",
                 Self::MIN_HEADER_LEN,
                 header_raw.len()
             ));
@@ -401,14 +390,14 @@ impl TryFrom<&[u8]> for IPv4Header {
 
         if (version_ihl >> 4) != 4 {
             return Err(format!(
-                "failed to parse into IPv4 header from input: expected version number: 4 provided version number: {}",
+                "failed to read IPv4 header from input: expected version number: 4, provided version number: {}",
                 version_ihl >> 4
             ));
         }
 
         if (version_ihl & 0xF) != 5 {
             return Err(format!(
-                "failed to parse into IPv4 header from input: expected ihl value: 5 provided ihl value: {}",
+                "failed to read IPv4 header from input: expected ihl value: 5, provided ihl value: {}",
                 version_ihl & 0xF
             ));
         }
@@ -416,12 +405,24 @@ impl TryFrom<&[u8]> for IPv4Header {
         Ok(Self {
             version_ihl,
             tos: header_raw[1],
-            total_len: u16::from_be_bytes([header_raw[2], header_raw[3]]),
+            total_len: {
+                let total_len = u16::from_be_bytes([header_raw[2], header_raw[3]]);
+
+                if total_len < ((version_ihl & 0xF) << 2) as u16 {
+                    return Err(format!(
+                        "failed to read IPv4 header from input: invalid total length: {}, provided ihl (in total bytes): {}",
+                        total_len,
+                        (version_ihl & 0xF) << 2
+                    ));
+                }
+
+                total_len
+            },
             id: u16::from_be_bytes([header_raw[4], header_raw[5]]),
             flags_and_offset: u16::from_be_bytes([header_raw[6], header_raw[7]]),
             ttl: header_raw[8],
             protocol: Protocol::try_from(header_raw[9])
-                .map_err(|err| format!("failed to parse into IPv4 header from input: {err}"))?,
+                .map_err(|err| format!("failed to read IPv4 header from input: {err}"))?,
             header_checksum: u16::from_be_bytes([header_raw[10], header_raw[11]]),
             src_addr: [
                 header_raw[12],
@@ -587,5 +588,218 @@ impl TryFrom<u8> for Protocol {
             35 => Ok(Protocol::IDPR),
             _ => Err(format!("provided invalid protocol number: {val}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_header_basic_valid() {
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let mut header_bytes = &header_bytes[..];
+
+        let header = IPv4Header::read(&mut header_bytes);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert_eq!(header.version(), 4);
+        assert_eq!(header.ihl(), 5);
+        assert_eq!(header.tos(), 0);
+        assert_eq!(header.total_len(), 60);
+        assert_eq!(header.id(), 48890);
+        assert!(header.dont_fragment());
+        assert!(!header.more_fragments());
+        assert_eq!(header.fragment_offset(), 0);
+        assert_eq!(header.ttl(), 64);
+        assert_eq!(header.protocol(), Protocol::TCP);
+        assert_eq!(header.header_checksum(), 0xFA43);
+        assert_eq!(header.src(), [192u8, 168u8, 0u8, 1u8]);
+        assert_eq!(header.dst(), [192u8, 168u8, 0u8, 44u8]);
+    }
+
+    #[test]
+    fn ipv4_header_round_trip_parsing_valid() {
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert_eq!(header.version(), 4);
+        assert_eq!(header.ihl(), 5);
+        assert_eq!(header.tos(), 0);
+        assert_eq!(header.total_len(), 60);
+        assert_eq!(header.id(), 48890);
+        assert!(header.dont_fragment());
+        assert!(!header.more_fragments());
+        assert_eq!(header.fragment_offset(), 0);
+        assert_eq!(header.ttl(), 64);
+        assert_eq!(header.protocol(), Protocol::TCP);
+        assert_eq!(header.header_checksum(), 0xFA43);
+        assert_eq!(header.src(), [192u8, 168u8, 0u8, 1u8]);
+        assert_eq!(header.dst(), [192u8, 168u8, 0u8, 44u8]);
+
+        let header_be_bytes = header.to_be_bytes();
+
+        let header = IPv4Header::try_from(&header_be_bytes[..]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert_eq!(header.version(), 4);
+        assert_eq!(header.ihl(), 5);
+        assert_eq!(header.tos(), 0);
+        assert_eq!(header.total_len(), 60);
+        assert_eq!(header.id(), 48890);
+        assert!(header.dont_fragment());
+        assert!(!header.more_fragments());
+        assert_eq!(header.fragment_offset(), 0);
+        assert_eq!(header.ttl(), 64);
+        assert_eq!(header.protocol(), Protocol::TCP);
+        assert_eq!(header.header_checksum(), 0xFA43);
+        assert_eq!(header.src(), [192u8, 168u8, 0u8, 1u8]);
+        assert_eq!(header.dst(), [192u8, 168u8, 0u8, 44u8]);
+    }
+
+    #[test]
+    fn ipv4_header_checksum_validation_valid() {
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let mut header = header.unwrap();
+
+        assert_eq!(header.header_checksum(), header.compute_header_checksum());
+
+        // Invalidate checksum.
+        header.set_payload_len(22).unwrap();
+
+        assert_ne!(header.header_checksum(), header.compute_header_checksum());
+    }
+
+    #[test]
+    fn ipv4_header_flags_bit_isolation_valid() {
+        // Don't Fragment (DF): 1
+        // More Fragments (MF): 0
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert!(header.dont_fragment());
+        assert!(!header.more_fragments());
+
+        // Don't Fragment (DF): 0
+        // More Fragments (MF): 1
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x20, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert!(!header.dont_fragment());
+        assert!(header.more_fragments());
+
+        // Don't Fragment (DF): 1
+        // More Fragments (MF): 1
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x60, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert!(header.dont_fragment());
+        assert!(header.more_fragments());
+
+        // Don't Fragment (DF): 0
+        // More Fragments (MF): 0
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x00, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert!(!header.dont_fragment());
+        assert!(!header.more_fragments());
+    }
+
+    #[test]
+    fn ipv4_header_fragment_offset_maximum_valid() {
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x5F, 0xFF, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+
+        assert_eq!(header.unwrap().fragment_offset(), 8191);
+    }
+
+    #[test]
+    fn ipv4_header_buffer_length_invalid() {
+        let header_bytes: [u8; 14] = [
+            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_err());
+    }
+
+    #[test]
+    fn ipv4_header_version_invalid() {
+        let header_bytes: [u8; 20] = [
+            0x65, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_err());
+    }
+
+    #[test]
+    fn ipv4_header_ihl_invalid() {
+        let header_bytes: [u8; 20] = [
+            0x43, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_err());
+    }
+
+    #[test]
+    fn ipv4_header_total_len_invalid() {
+        let header_bytes: [u8; 20] = [
+            0x45, 0x00, 0x00, 0x00, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+        ];
+
+        let header = IPv4Header::try_from(&header_bytes[..]);
+        assert!(header.is_err());
     }
 }
