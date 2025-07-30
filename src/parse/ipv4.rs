@@ -690,61 +690,32 @@ mod tests {
 
     #[test]
     fn ipv4_header_flags_bit_isolation_valid() {
-        // Don't Fragment (DF): 1
-        // More Fragments (MF): 0
-        let header_bytes: [u8; 20] = [
-            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
-            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
-        ];
+        // Check for all permutations of DF and MF bits.
+        for flags in 0..=0b111 {
+            let mut header_bytes: [u8; 20] = [
+                0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x40, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
+                0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
+            ];
 
-        let header = IPv4Header::try_from(&header_bytes[..]);
-        assert!(header.is_ok());
-        let header = header.unwrap();
+            header_bytes[6] = flags;
 
-        assert!(header.dont_fragment());
-        assert!(!header.more_fragments());
+            let header = IPv4Header::try_from(&header_bytes[..]);
+            assert!(header.is_ok(),);
+            let header = header.unwrap();
 
-        // Don't Fragment (DF): 0
-        // More Fragments (MF): 1
-        let header_bytes: [u8; 20] = [
-            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x20, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
-            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
-        ];
-
-        let header = IPv4Header::try_from(&header_bytes[..]);
-        assert!(header.is_ok());
-        let header = header.unwrap();
-
-        assert!(!header.dont_fragment());
-        assert!(header.more_fragments());
-
-        // Don't Fragment (DF): 1
-        // More Fragments (MF): 1
-        let header_bytes: [u8; 20] = [
-            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x60, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
-            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
-        ];
-
-        let header = IPv4Header::try_from(&header_bytes[..]);
-        assert!(header.is_ok());
-        let header = header.unwrap();
-
-        assert!(header.dont_fragment());
-        assert!(header.more_fragments());
-
-        // Don't Fragment (DF): 0
-        // More Fragments (MF): 0
-        let header_bytes: [u8; 20] = [
-            0x45, 0x00, 0x00, 0x3c, 0xbe, 0xfa, 0x00, 0x00, 0x40, 0x06, 0xfa, 0x43, 0xc0, 0xa8,
-            0x00, 0x01, 0xc0, 0xa8, 0x00, 0x2c,
-        ];
-
-        let header = IPv4Header::try_from(&header_bytes[..]);
-        assert!(header.is_ok());
-        let header = header.unwrap();
-
-        assert!(!header.dont_fragment());
-        assert!(!header.more_fragments());
+            assert_eq!(
+                header.dont_fragment(),
+                (flags & 0b01000000) != 0,
+                "DF failed for {:06b}",
+                flags
+            );
+            assert_eq!(
+                header.more_fragments(),
+                (flags & 0b00100000) != 0,
+                "MF failed for {:06b}",
+                flags
+            );
+        }
     }
 
     #[test]

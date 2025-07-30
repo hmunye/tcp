@@ -24,8 +24,6 @@ use crate::parse::IPv4Header;
 ///    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///    |                             data                              |
 ///    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   
-///                                Figure 3.
 /// ```
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -297,7 +295,7 @@ impl TCPHeader {
     /// # Errors
     ///
     /// Returns an error if there is not enough space in the option buffer to
-    /// append the MSS option.
+    /// append the MSS option, or the MSS value provided is 0.
     pub fn set_option_mss(&mut self, mss: u16) -> Result<(), String> {
         self.options.set_mss(mss)?;
 
@@ -356,8 +354,8 @@ impl TCPHeader {
 
         // Checksum field must be 0 for computation.
         tcp_header.checksum = 0;
-        let tcp_header_bytes = tcp_header.to_be_bytes();
-        let tcp_header_bytes = &tcp_header_bytes[..tcp_header.header_len()];
+        let (buf, nbytes) = tcp_header.to_be_bytes();
+        let tcp_header_bytes = &buf[..nbytes];
 
         // Chain together each byte slice so all word-sized values can be
         // summed.
@@ -414,9 +412,11 @@ impl TCPHeader {
     }
 
     /// Returns the memory representation of the [TCPHeader] as a byte array in
-    /// big-endian (network) byte order.
-    pub fn to_be_bytes(&self) -> [u8; Self::MAX_HEADER_LEN as usize] {
+    /// big-endian (network) byte order as well as the number of bytes actually
+    /// written to the byte array, since it may be less then the total length.
+    pub fn to_be_bytes(&self) -> ([u8; Self::MAX_HEADER_LEN as usize], usize) {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
+        let size = self.header_len();
 
         raw_header[0..2].copy_from_slice(&self.src_port.to_be_bytes());
         raw_header[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
@@ -427,9 +427,9 @@ impl TCPHeader {
         raw_header[16..18].copy_from_slice(&self.checksum.to_be_bytes());
         raw_header[18..20].copy_from_slice(&self.urgent_pointer.to_be_bytes());
 
-        raw_header[20..self.header_len()].copy_from_slice(self.options.as_slice());
+        raw_header[20..size].copy_from_slice(self.options.as_slice());
 
-        raw_header
+        (raw_header, size)
     }
 
     /// Reads the [TCPHeader] from the given input stream.
@@ -440,11 +440,12 @@ impl TCPHeader {
     /// is provided.
     pub fn read<T: io::Read>(input: &mut T) -> Result<Self, String> {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
-        input
-            .read_exact(&mut raw_header[..])
-            .map_err(|err| format!("failed to parse TCP header from input: {err}"))?;
 
-        TCPHeader::try_from(&raw_header[..])
+        let nbytes = input
+            .read(&mut raw_header[..])
+            .map_err(|err| format!("failed to read TCP header from input: {err}"))?;
+
+        TCPHeader::try_from(&raw_header[..nbytes])
     }
 
     /// Writes the [TCPHeader] to the given output stream.
@@ -459,8 +460,10 @@ impl TCPHeader {
     ///
     /// Returns an error if writing to the output stream fails.
     pub fn write<T: io::Write>(&self, output: &mut T) -> Result<(), String> {
+        let (buf, nbytes) = self.to_be_bytes();
+
         output
-            .write_all(&self.to_be_bytes()[..self.header_len()])
+            .write_all(&buf[..nbytes])
             .map_err(|err| format!("failed to write TCP header to output: {err}"))?;
 
         Ok(())
@@ -473,7 +476,7 @@ impl TryFrom<&[u8]> for TCPHeader {
     fn try_from(header_raw: &[u8]) -> Result<Self, Self::Error> {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
             return Err(format!(
-                "failed to parse TCP header from input: expected header length to be greater than: {} provided header length: {}",
+                "failed to read TCP header from input: expected header length to be greater than: {}, provided header length: {}",
                 Self::MIN_HEADER_LEN,
                 header_raw.len()
             ));
@@ -484,9 +487,18 @@ impl TryFrom<&[u8]> for TCPHeader {
         let data_offset = offset_and_control_bits >> 12;
         if data_offset < Self::MIN_DATA_OFFSET {
             return Err(format!(
-                "failed to parse TCP header from input: expected data offset to be greater than: {} provided data offset: {}",
+                "failed to read TCP header from input: expected data offset to be greater than: {}, provided data offset: {}",
                 Self::MIN_DATA_OFFSET,
                 data_offset
+            ));
+        }
+
+        // There are less bytes in the buffer than advertised by data offset.
+        if (data_offset << 2) > header_raw.len() as u16 {
+            return Err(format!(
+                "failed to read TCP header from input: provided data offset (in bytes): {}, provied header length: {}",
+                data_offset >> 2,
+                header_raw.len(),
             ));
         }
 
@@ -511,8 +523,20 @@ impl TryFrom<&[u8]> for TCPHeader {
             urgent_pointer: u16::from_be_bytes([header_raw[18], header_raw[19]]),
             options: {
                 if data_offset > Self::MIN_DATA_OFFSET {
+                    let rest_len = header_raw[20..].len();
+
+                    // SAFETY: Already check if data offset is greater than or
+                    // equal to the minimum.
+                    if ((data_offset - Self::MIN_DATA_OFFSET) << 2) as usize != rest_len {
+                        return Err(format!(
+                            "failed to read TCP header from input: provided options length: {}, options length indicated by data offset: {}",
+                            rest_len,
+                            (data_offset - Self::MIN_DATA_OFFSET) << 2
+                        ));
+                    }
+
                     TCPOptions::try_from(&header_raw[20..(data_offset << 2) as usize])
-                        .map_err(|err| format!("failed to parse TCP header from input: {err}"))?
+                        .map_err(|err| format!("failed to read TCP header from input: {err}"))?
                 } else {
                     TCPOptions::new()
                 }
@@ -591,6 +615,10 @@ impl TCPOptions {
                     //         ^                 ^^^^^^^^^^^^^^^^^^
                     //         |-- Here           Want these bytes
                     // ```
+                    if opts_slice[i + 1] != 0x04 {
+                        break;
+                    }
+
                     return Some(u16::from_be_bytes([opts_slice[i + 2], opts_slice[i + 3]]));
                 }
             }
@@ -605,26 +633,36 @@ impl TCPOptions {
     /// # Errors
     ///
     /// Returns an error if there is not enough space in the option buffer to
-    /// append the MSS option.
+    /// append the MSS option, or the MSS value provided is 0.
     pub fn set_mss(&mut self, mss: u16) -> Result<(), String> {
-        let opts_len = self.len();
+        if self.mss().is_some() {
+            // Skip setting MSS option is it already exists.
+        } else {
+            if mss == 0 {
+                return Err(format!(
+                    "failed to append MSS option to buffer: invalid MSS value: {mss}",
+                ));
+            }
 
-        if (opts_len + 4) as u16 > Self::MAX_OPTIONS_LEN {
-            return Err(format!(
-                "failed to append MSS option to buffer: buffer length if appended {}, maximum allowed buffer length: {}",
-                opts_len + 4,
-                Self::MAX_OPTIONS_LEN
-            ));
+            let opts_len = self.len();
+
+            if (opts_len + 4) as u16 > Self::MAX_OPTIONS_LEN {
+                return Err(format!(
+                    "failed to append MSS option to buffer: buffer length if appended {}, maximum allowed buffer length: {}",
+                    opts_len + 4,
+                    Self::MAX_OPTIONS_LEN
+                ));
+            }
+
+            let mut mss_option = [0u8; 4];
+
+            mss_option[0] = OptionKind::MSS as u8;
+            mss_option[1] = 0x04;
+            mss_option[2..4].copy_from_slice(&mss.to_be_bytes());
+
+            self.buf[opts_len..opts_len + 4].copy_from_slice(&mss_option);
+            self.len += 4;
         }
-
-        let mut mss_option = [0u8; 4];
-
-        mss_option[0] = OptionKind::MSS as u8;
-        mss_option[1] = 0x04;
-        mss_option[2..4].copy_from_slice(&mss.to_be_bytes());
-
-        self.buf[opts_len..opts_len + 4].copy_from_slice(&mss_option);
-        self.len += 4;
 
         Ok(())
     }
@@ -643,7 +681,7 @@ impl TCPOptions {
     pub fn as_slice(&self) -> &[u8] {
         debug_assert!(self.len <= 40);
 
-        // SAFETY: Already verify self.len to be less then 40
+        // SAFETY: Verified that self.len is less then 40 bytes.
         unsafe { std::slice::from_raw_parts(self.buf.as_ptr(), self.len()) }
     }
 }
@@ -654,7 +692,7 @@ impl TryFrom<&[u8]> for TCPOptions {
     fn try_from(byte_slice: &[u8]) -> Result<Self, Self::Error> {
         if byte_slice.len() > Self::MAX_OPTIONS_LEN as usize {
             return Err(format!(
-                "expected options length to be less than: {} provided options length: {}",
+                "expected options length to be less than: {}, provided options length: {}",
                 Self::MAX_OPTIONS_LEN,
                 byte_slice.len()
             ));
@@ -725,7 +763,7 @@ pub enum OptionKind {
     ///         Kind=2   Length=4
     /// ```
     ///
-    /// Maximum Segment Size Option Data:  16 bits
+    /// Maximum Segment" Size Option Data:  16 bits
     ///
     /// If this option is present, then it communicates the maximum receive
     /// segment size at the TCP which sends this segment. This field must only
@@ -741,5 +779,238 @@ impl From<u8> for OptionKind {
             2 => Self::MSS,
             _ => Self::EOL,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tcp_header_basic_valid() {
+        let header_bytes: [u8; 40] = [
+            0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x02,
+            0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
+            0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07,
+        ];
+
+        let mut header_bytes = &header_bytes[..];
+
+        let header = TCPHeader::read(&mut header_bytes);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert_eq!(header.src_port(), 40982);
+        assert_eq!(header.dst_port(), 443);
+        assert_eq!(header.seq_number(), 3166393512);
+        assert_eq!(header.ack_number(), 0);
+        assert_eq!(header.data_offset(), 10);
+        assert!(!header.urg());
+        assert!(!header.ack());
+        assert!(!header.psh());
+        assert!(!header.rst());
+        assert!(header.syn());
+        assert!(!header.fin());
+        assert_eq!(header.window(), 64240);
+        assert_eq!(header.checksum(), 0xBB4C);
+        assert_eq!(header.urgent_pointer(), 0);
+        assert_eq!(header.options().as_slice().len(), 20);
+        assert_eq!(header.options().mss(), Some(1460));
+    }
+
+    #[test]
+    fn tcp_header_round_trip_parsing_valid() {
+        let header_bytes: [u8; 40] = [
+            0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x02,
+            0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
+            0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07,
+        ];
+
+        let mut header_bytes = &header_bytes[..];
+
+        let header = TCPHeader::read(&mut header_bytes);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert_eq!(header.src_port(), 40982);
+        assert_eq!(header.dst_port(), 443);
+        assert_eq!(header.seq_number(), 3166393512);
+        assert_eq!(header.ack_number(), 0);
+        assert_eq!(header.data_offset(), 10);
+        assert!(!header.urg());
+        assert!(!header.ack());
+        assert!(!header.psh());
+        assert!(!header.rst());
+        assert!(header.syn());
+        assert!(!header.fin());
+        assert_eq!(header.window(), 64240);
+        assert_eq!(header.checksum(), 0xBB4C);
+        assert_eq!(header.urgent_pointer(), 0);
+        assert_eq!(header.options().as_slice().len(), 20);
+        assert_eq!(header.options().mss(), Some(1460));
+
+        let (buf, nbytes) = header.to_be_bytes();
+
+        let header = TCPHeader::try_from(&buf[..nbytes]);
+        assert!(header.is_ok());
+        let header = header.unwrap();
+
+        assert_eq!(header.src_port(), 40982);
+        assert_eq!(header.dst_port(), 443);
+        assert_eq!(header.seq_number(), 3166393512);
+        assert_eq!(header.ack_number(), 0);
+        assert_eq!(header.data_offset(), 10);
+        assert!(!header.urg());
+        assert!(!header.ack());
+        assert!(!header.psh());
+        assert!(!header.rst());
+        assert!(header.syn());
+        assert!(!header.fin());
+        assert_eq!(header.window(), 64240);
+        assert_eq!(header.checksum(), 0xBB4C);
+        assert_eq!(header.urgent_pointer(), 0);
+        assert_eq!(header.options().as_slice().len(), 20);
+        assert_eq!(header.options().mss(), Some(1460));
+    }
+
+    #[test]
+    fn tcp_header_checksum_validation_valid() {
+        let header_bytes: [u8; 40] = [
+            0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x02,
+            0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
+            0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07,
+        ];
+
+        let header = TCPHeader::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let mut header = header.unwrap();
+
+        let iph = IPv4Header::new(
+            [192, 168, 0, 1],
+            [192, 168, 0, 44],
+            header.header_len() as u16,
+            64,
+            crate::parse::Protocol::TCP,
+        )
+        .unwrap();
+
+        assert_eq!(header.checksum(), header.compute_checksum(&iph, &[]));
+
+        // Invalidate checksum.
+        header.set_ack_number(22);
+
+        assert_ne!(header.checksum(), header.compute_checksum(&iph, &[]));
+    }
+
+    #[test]
+    fn tcp_header_flags_bit_isolation_valid() {
+        // Check for all permutations of URG, ACK, PSH, RST, SYN, and FIN bits.
+        for flags in 0u8..=0b00111111 {
+            let mut header_bytes: [u8; 40] = [
+                0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x00,
+                0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
+                0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07,
+            ];
+
+            header_bytes[13] = flags;
+
+            let header = TCPHeader::try_from(&header_bytes[..]);
+            assert!(header.is_ok(),);
+            let header = header.unwrap();
+
+            assert_eq!(
+                header.urg(),
+                (flags & 0b00100000) != 0,
+                "URG failed for {:06b}",
+                flags
+            );
+            assert_eq!(
+                header.ack(),
+                (flags & 0b00010000) != 0,
+                "ACK failed for {:06b}",
+                flags
+            );
+            assert_eq!(
+                header.psh(),
+                (flags & 0b00001000) != 0,
+                "PSH failed for {:06b}",
+                flags
+            );
+            assert_eq!(
+                header.rst(),
+                (flags & 0b00000100) != 0,
+                "RST failed for {:06b}",
+                flags
+            );
+            assert_eq!(
+                header.syn(),
+                (flags & 0b00000010) != 0,
+                "SYN failed for {:06b}",
+                flags
+            );
+            assert_eq!(
+                header.fin(),
+                (flags & 0b00000001) != 0,
+                "FIN failed for {:06b}",
+                flags
+            );
+        }
+    }
+
+    #[test]
+    fn tcp_header_data_offset_maximum_valid() {
+        let header_bytes: [u8; 60] = [
+            0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x00,
+            0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
+            0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let header = TCPHeader::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+
+        assert_eq!(header.unwrap().data_offset(), 15);
+    }
+
+    #[test]
+    fn tcp_header_set_mss_valid() {
+        let header_bytes: [u8; 20] = [
+            0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02,
+            0xfa, 0xf0, 0x80, 0x3e, 0x00, 0x00,
+        ];
+
+        let header = TCPHeader::try_from(&header_bytes[..]);
+        assert!(header.is_ok());
+        let mut header = header.unwrap();
+
+        assert_eq!(header.data_offset(), 5);
+        assert_eq!(header.options.mss(), None);
+
+        assert!(header.set_option_mss(1460).is_ok());
+
+        assert_eq!(header.data_offset(), 6);
+        assert_eq!(header.options.mss(), Some(1460));
+
+        let (buf, nbytes) = header.to_be_bytes();
+
+        assert!(TCPHeader::try_from(&buf[..nbytes]).is_ok());
+    }
+
+    #[test]
+    fn tcp_header_options_length_invalid() {
+        // Data offset of 6 means 4 bytes of options present.
+        //
+        // Provided 40 bytes of options instead.
+        let header_bytes: [u8; 60] = [
+            0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00,
+            0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
+            0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let header = TCPHeader::try_from(&header_bytes[..]);
+        assert!(header.is_err());
     }
 }
