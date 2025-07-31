@@ -1,10 +1,5 @@
 //! Very minimal implementation of the Transmission Control Protocol (TCP).
 
-// TODO: READ THE RFC
-
-use std::collections::VecDeque;
-use std::net::Ipv4Addr;
-
 use crate::parse::{IPv4Header, Protocol, TCPHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{info, warn};
@@ -15,22 +10,22 @@ use crate::{info, warn};
 /// default send MSS of 536 (576-40).
 const DEFAULT_MSS: u16 = 536;
 
-const SEND_BUF_SIZE: usize = 4096;
-const RECV_BUF_SIZE: usize = 4096;
+/// The advertised window size to the peer of the TCP connection.
+const RECV_WND_SIZE: usize = 4096;
 
 /// Representation of a unique TCP connection.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Socket {
     /// Source Address and Port.
-    src: (Ipv4Addr, u16),
+    src: ([u8; 4], u16),
     /// Destination Address and Port.
-    dst: (Ipv4Addr, u16),
+    dst: ([u8; 4], u16),
 }
 
 impl Socket {
     /// Creates a new [Socket] using provided (source address, source port) and
     /// (destination address, destination port) pairs.
-    pub fn new(src: (Ipv4Addr, u16), dst: (Ipv4Addr, u16)) -> Self {
+    pub fn new(src: ([u8; 4], u16), dst: ([u8; 4], u16)) -> Self {
         Self { src, dst }
     }
 }
@@ -42,16 +37,10 @@ pub struct TCB {
     /// Current state of the TCP connection.
     state: ConnectionState,
     /// Send Sequence Space for the TCP connection.
-    send_sp: SendSeqSpace,
+    snd: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
-    recv_sp: RecvSeqSpace,
-    /// Buffer containing bytes sent to the peer.
-    #[allow(dead_code)]
-    send_buf: VecDeque<u8>,
-    /// Buffer containing bytes received from the peer.
-    #[allow(dead_code)]
-    recv_buf: VecDeque<u8>,
-    /// Maximum Segment Size (MSS).
+    rcv: RecvSeqSpace,
+    /// Maximum Segment Size (MSS) of peer.
     #[allow(dead_code)]
     peer_mss: u16,
 }
@@ -59,7 +48,6 @@ pub struct TCB {
 /// Send Sequence Space (RFC 793 3.2).
 ///
 /// ```text
-///
 ///                   1         2          3          4
 ///              ----------|----------|----------|----------
 ///                     SND.UNA    SND.NXT    SND.UNA
@@ -69,8 +57,6 @@ pub struct TCB {
 ///        2 - sequence numbers of unacknowledged data
 ///        3 - sequence numbers allowed for new data transmission
 ///        4 - future sequence numbers which are not yet allowed
-///
-///                               Figure 4.
 /// ```
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -94,8 +80,6 @@ pub struct SendSeqSpace {
 /// Receive Sequence Space (RFC 793 3.2).
 ///
 /// ```text
-///
-///
 ///                       1          2          3
 ///                   ----------|----------|----------
 ///                          RCV.NXT    RCV.NXT
@@ -104,8 +88,6 @@ pub struct SendSeqSpace {
 ///        1 - old sequence numbers which have been acknowledged
 ///        2 - sequence numbers allowed for new reception
 ///        3 - future sequence numbers which are not yet allowed
-///
-///                               Figure 5.
 /// ```
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -159,6 +141,18 @@ pub enum ConnectionState {
     CLOSED,
 }
 
+#[allow(dead_code)]
+impl ConnectionState {
+    /// Returns `true` if the current [ConnectionState] is in a "synchronized"
+    /// state.
+    pub fn is_synchronized(&self) -> bool {
+        !matches!(
+            self,
+            Self::CLOSED | Self::LISTEN | Self::SYN_SENT | Self::SYN_RECEIVED
+        )
+    }
+}
+
 impl TCB {
     /// Processes any incoming TCP segment when no connection state exists.
     ///
@@ -175,17 +169,19 @@ impl TCB {
     pub fn on_conn_req(nic: &mut Tun, iph: &IPv4Header, tcph: &TCPHeader) -> Result<Self, String> {
         TCB::log_packet(iph, tcph, &[]);
 
+        // Ensure we are only processing a SYN segment.
         if !tcph.syn() || tcph.ack() {
-            return Err("did not receive a SYN segment to begin three-way handshake".into());
+            return Err("expected to receive a SYN segment to begin three-way handshake".into());
         }
 
         let mut buf = [0u8; MTU_SIZE];
 
-        // Initial Send Sequence Number
+        // Initial Send Sequence Number (should be initialized with a random value).
         let iss = 0;
+
         let conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
-            send_sp: SendSeqSpace {
+            snd: SendSeqSpace {
                 // Should be the value of the last ACK received. Since we have
                 // not sent any bytes yet, it is set to the ISS.
                 una: iss,
@@ -203,35 +199,28 @@ impl TCB {
                 // What sequence number we choose to start from.
                 iss,
             },
-            recv_sp: RecvSeqSpace {
+            rcv: RecvSeqSpace {
                 // The next sequence number we expect from the peer.
                 nxt: tcph.seq_number() + 1,
                 // The window size we advertise to the peer.
-                wnd: RECV_BUF_SIZE as u16,
+                wnd: RECV_WND_SIZE as u16,
                 up: tcph.urgent_pointer(),
                 // What sequence number the peer chooses to start from.
                 irs: tcph.seq_number(),
             },
-            send_buf: VecDeque::with_capacity(SEND_BUF_SIZE),
-            recv_buf: VecDeque::with_capacity(RECV_BUF_SIZE),
             // Keep track of the peer's MSS that may have included in TCP
             // options.
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
         };
 
-        let mut syn_ack = TCPHeader::new(
-            tcph.dst_port(),
-            tcph.src_port(),
-            conn.send_sp.iss,
-            conn.recv_sp.wnd,
-        );
+        let mut syn_ack =
+            TCPHeader::new(tcph.dst_port(), tcph.src_port(), conn.snd.iss, conn.rcv.wnd);
 
         // Acknowledge the peer's SYN.
-        syn_ack.set_ack_number(conn.recv_sp.nxt);
+        syn_ack.set_ack_number(conn.rcv.nxt);
 
         // Set our MSS option value for the peer to adhere to.
         syn_ack.set_option_mss(1460)?;
-
         syn_ack.set_syn();
         syn_ack.set_ack();
 
@@ -354,49 +343,50 @@ impl TCB {
         //                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
         // ```
 
-        // Segment length includes the payload length and SYN and FIN virtual bytes.
+        // The number of octets occupied by the data in the segment (counting SYN and FIN).
         let seg_len =
             payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
 
-        let nxt_wnd = self.recv_sp.nxt.wrapping_add(self.recv_sp.wnd as u32);
+        let nxt_wnd = self.rcv.nxt.wrapping_add(self.rcv.wnd as u32);
 
         match seg_len {
-            0 => match self.recv_sp.wnd {
+            0 => match self.rcv.wnd {
                 0 => {
                     // Case 1: SEG.SEQ = RCV.NXT
-                    if seqn != self.recv_sp.nxt {
+                    if seqn != self.rcv.nxt {
                         return Err(format!(
                             "invalid SEQ number {}: expected SEQ number {}",
-                            seqn, self.recv_sp.nxt
+                            seqn, self.rcv.nxt
                         ));
                     }
                 }
                 _ => {
                     // Case 2: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-                    if !is_between_wrapped(self.recv_sp.nxt.wrapping_sub(1), seqn, nxt_wnd) {
+                    if !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd) {
                         return Err(format!(
                             "invalid SEQ number {}: expected SEQ number between {} and {} (exclusive of {})",
                             seqn,
-                            self.recv_sp.nxt.wrapping_sub(1),
+                            self.rcv.nxt.wrapping_sub(1),
                             nxt_wnd,
                             nxt_wnd
                         ));
                     }
                 }
             },
-            len => match self.recv_sp.wnd {
+            len => match self.rcv.wnd {
                 0 => {
-                    // Case 3: not acceptable
+                    // Case 3: not acceptable (we have received bytes when we are
+                    // advertising that we are not accepting any at the moment).
                     return Err(format!(
-                        "segment length of {len} with a receive window of 0",
+                        "received {len} bytes of data from peer with current receive window value: 0",
                     ));
                 }
                 _ => {
                     // Case 4: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                     //      or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
-                    if !is_between_wrapped(self.recv_sp.nxt.wrapping_sub(1), seqn, nxt_wnd)
+                    if !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd)
                         && !is_between_wrapped(
-                            self.recv_sp.nxt.wrapping_sub(1),
+                            self.rcv.nxt.wrapping_sub(1),
                             seqn + len - 1,
                             nxt_wnd,
                         )
@@ -404,7 +394,7 @@ impl TCB {
                         return Err(format!(
                             "invalid SEQ number {}: expected first or last SEQ number occupied by the segment between {} and {} (exclusive of {})",
                             seqn,
-                            self.recv_sp.nxt.wrapping_sub(1),
+                            self.rcv.nxt.wrapping_sub(1),
                             nxt_wnd,
                             nxt_wnd
                         ));
@@ -430,22 +420,22 @@ impl TCB {
                 // ```text
                 //    SND.UNA < SEG.ACK =< SND.NXT
                 // ```
-
-                if !is_between_wrapped(self.send_sp.una, ackn, self.send_sp.nxt.wrapping_add(1)) {
+                if !is_between_wrapped(self.snd.una, ackn, self.snd.nxt.wrapping_add(1)) {
                     return Err(format!(
                         "invalid ACK number {}: expected ACK number between {} and {} (exclusive of {})",
                         ackn,
-                        self.send_sp.una,
-                        self.send_sp.nxt.wrapping_add(1),
-                        self.send_sp.una
+                        self.snd.una,
+                        self.snd.nxt.wrapping_add(1),
+                        self.snd.una
                     ));
                 }
 
                 self.state = ConnectionState::ESTABLISHED;
                 // Send window slides to the right since the SYN segment sent
-                // was acknowledged.
-                self.send_sp.una = ackn;
+                // was ACKed.
+                self.snd.una = ackn;
             }
+            ConnectionState::LISTEN | ConnectionState::CLOSED => unreachable!(),
             _ => {
                 warn!(
                     "connection state {:?} is not currently being handled",
@@ -460,7 +450,7 @@ impl TCB {
     /// Logs the details of an incoming TCP segment.
     fn log_packet(iph: &IPv4Header, tcph: &TCPHeader, payload: &[u8]) {
         info!(
-            "ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}, payload: {} bytes",
+            "ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
             iph.version(),
             iph.ihl(),
             iph.tos(),
@@ -475,7 +465,6 @@ impl TCB {
             iph.compute_header_checksum() == iph.header_checksum(),
             iph.src(),
             iph.dst(),
-            iph.payload_len()
         );
 
         info!(
