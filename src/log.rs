@@ -1,10 +1,7 @@
 //! Minimal logging utility for basic message output with severity levels.
 
 use std::ffi::CStr;
-use std::fmt;
-use std::io;
-use std::process;
-use std::ptr;
+use std::{fmt, io, ptr};
 
 const SOURCE: &str = "tcp";
 
@@ -48,8 +45,10 @@ macro_rules! info {
 /// - Messages with level [Level::Info] are printed to stdout.
 /// - Messages with level [Level::Warn] and [Level::Error] are printed to stderr.
 ///
-/// If either the [libc::localtime] or [libc::strftime] functions fail, this
-/// function will terminate the program with an exit status code of 1.
+/// # Panics
+///
+/// This function will terminate the process if the current timestamp could not
+/// be determined.
 pub fn log(level: Level, msg: impl fmt::Display) {
     let mut buf = [0u8; 20]; // "YYYY-MM-DD HH:MM:SS"
 
@@ -62,11 +61,7 @@ pub fn log(level: Level, msg: impl fmt::Display) {
         // time representation.
         let tm_ptr = libc::localtime(&now);
         if tm_ptr.is_null() {
-            eprintln!(
-                "\x1b[1;37m[{SOURCE}]\x1b[0m \x1b[31mERROR\x1b[0m: {}",
-                io::Error::last_os_error()
-            );
-            process::exit(1);
+            panic!("{}", io::Error::last_os_error());
         }
 
         // strftime() formats the broken-down time of type `tm` according
@@ -82,10 +77,7 @@ pub fn log(level: Level, msg: impl fmt::Display) {
             tm_ptr,
         ) == 0
         {
-            eprintln!(
-                "\x1b[1;37m[{SOURCE}]\x1b[0m \x1b[31mERROR\x1b[0m: strftime function returned 0"
-            );
-            process::exit(1);
+            panic!("strftime function returned 0");
         }
     }
 

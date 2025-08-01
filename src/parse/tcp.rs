@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::parse::IPv4Header;
+use crate::parse::Ipv4Header;
 
 /// Representation of a TCP segment header (RFC 793 3.1).
 ///
@@ -25,9 +25,9 @@ use crate::parse::IPv4Header;
 ///    |                             data                              |
 ///    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
-#[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct TCPHeader {
+#[derive(Debug)]
+pub struct TcpHeader {
     /// The source port number.
     src_port: u16,
     /// The destination port number.
@@ -65,19 +65,20 @@ pub struct TCPHeader {
     /// acknowledgment field which the sender of this segment is willing to
     /// accept.
     window: u16,
-    /// The checksum field is the 16 bit one's complement of the one's complement
-    /// sum of all 16 bit words in the header and text. If a segment contains an
-    /// odd number of header and text octets to be checksummed, the last octet is
-    /// padded on the right with zeros to form a 16 bit word for checksum purposes.  
-    /// The pad is not transmitted as part of the segment. While computing the
-    /// checksum, the checksum field itself is replaced with zeros.
+    /// The checksum field is the 16 bit one's complement of the one's
+    /// complement sum of all 16 bit words in the header and text. If a segment
+    /// contains an odd number of header and text octets to be checksummed, the
+    /// last octet is padded on the right with zeros to form a 16 bit word for
+    /// checksum purposes. The pad is not transmitted as part of the segment.
+    /// While computing the checksum, the checksum field itself is replaced with
+    /// zeros.
     ///
     /// The checksum also covers a 96 bit pseudo header conceptually prefixed to
     /// the TCP header. This pseudo header contains the Source Address, the
     /// Destination Address, the Protocol, and TCP length. This gives the TCP
     /// protection against misrouted segments. This information is carried in
-    /// the Internet Protocol and is transferred across the TCP/Network interface
-    /// in the arguments or results of calls by the TCP on the IP.
+    /// the Internet Protocol and is transferred across the TCP/Network
+    /// interface in the arguments or results of calls by the TCP on the IP.
     ///
     /// ```text
     ///        +--------+--------+--------+--------+
@@ -111,10 +112,10 @@ pub struct TCPHeader {
     ///       1         -       No-Operation.
     ///       2         4       Maximum Segment Size.
     /// ```
-    options: TCPOptions,
+    options: TcpOptions,
 }
 
-impl TCPHeader {
+impl TcpHeader {
     /// Minimum length of an TCP header in bytes.
     pub const MIN_HEADER_LEN: u16 = 20;
 
@@ -142,10 +143,7 @@ impl TCPHeader {
     /// Maximum data offset of a TCP header.
     pub const MAX_DATA_OFFSET: u16 = 15;
 
-    /// Length of the pseudo header, in bytes. Used in computing checksum.
-    pub const PSEUDO_HEADER_LEN: usize = 12;
-
-    /// Creates a new [TCPHeader] with the specified source and destination
+    /// Creates a new TCP header with the specified source and destination
     /// ports, initial sequence number (ISN), and window size, while setting
     /// default values for other fields.
     pub fn new(src_port: u16, dst_port: u16, seq_number: u32, window: u16) -> Self {
@@ -158,155 +156,157 @@ impl TCPHeader {
         }
     }
 
-    /// Returns the Source Port field from the [TCPHeader].
+    /// Returns the Source Port field from the TCP header.
     pub fn src_port(&self) -> u16 {
         self.src_port
     }
 
-    /// Returns the Destination Port field from the [TCPHeader].
+    /// Returns the Destination Port field from the TCP header.
     pub fn dst_port(&self) -> u16 {
         self.dst_port
     }
 
-    /// Returns the Sequence Number field from the [TCPHeader].
+    /// Returns the Sequence Number field from the TCP header.
     pub fn seq_number(&self) -> u32 {
         self.seq_number
     }
 
-    /// Returns the Acknowledgment Number field from the [TCPHeader].
+    /// Returns the Acknowledgment Number field from the TCP header.
     pub fn ack_number(&self) -> u32 {
         self.ack_number
     }
 
-    /// Sets the Acknowledgment Number field of the [TCPHeader] with the
-    /// provided value.
+    /// Sets the Acknowledgment Number field of the TCP header with the provided
+    /// value.
     pub fn set_ack_number(&mut self, ack: u32) {
         self.ack_number = ack;
     }
 
-    /// Returns the Data Offset field from the [TCPHeader].
+    /// Returns the Data Offset field from the TCP header.
     pub fn data_offset(&self) -> u8 {
         // Stored in the higher 4 bits.
         (self.offset_and_control_bits >> 12) as u8
     }
 
-    /// Checks if the URG (Urgent) control bit is set in the [TCPHeader].
+    /// Returns `true` if the URG (Urgent) control bit is set in the TCP header.
     pub fn urg(&self) -> bool {
-        // Stored as the 5th bit from the LSB (counting from 0).
+        // Stored as the 5th bit from the LSB.
         (self.offset_and_control_bits >> 5) & 1 == 1
     }
 
-    /// Sets the URG (Urgent) control bit in the [TCPHeader] if not already set.
+    /// Sets the URG (Urgent) control bit in the TCP header, if not already set.
     pub fn set_urg(&mut self) {
-        // Sets the 5th bit from the LSB (counting from 0).
+        // Sets the 5th bit from the LSB.
         self.offset_and_control_bits |= 1 << 5;
     }
 
-    /// Checks if the ACK (Acknowledgment) control bit is set in the [TCPHeader].
+    /// Returns `true` if the ACK (Acknowledgment) control bit is set in the TCP
+    /// header.
     pub fn ack(&self) -> bool {
-        // Stored as the 4th bit from the LSB (counting from 0).
+        // Stored as the 4th bit from the LSB.
         (self.offset_and_control_bits >> 4) & 1 == 1
     }
 
-    /// Sets the ACK (Acknowledgment) control bit in the [TCPHeader] if not
+    /// Sets the ACK (Acknowledgment) control bit in the TCP header, if not
     /// already set.
     pub fn set_ack(&mut self) {
-        // Sets the 4th bit from the LSB (counting from 0).
+        // Sets the 4th bit from the LSB.
         self.offset_and_control_bits |= 1 << 4;
     }
 
-    /// Checks if the PSH (Push) control bit is set in the [TCPHeader].
+    /// Returns `true` if the PSH (Push) control bit is set in the TCP header.
     pub fn psh(&self) -> bool {
-        // Stored as the 3rd bit from the LSB (counting from 0).
+        // Stored as the 3rd bit from the LSB.
         (self.offset_and_control_bits >> 3) & 1 == 1
     }
 
-    /// Sets the PSH (Push) control bit in the [TCPHeader] if not already set.
+    /// Sets the PSH (Push) control bit in the TCP header, if not already set.
     pub fn set_psh(&mut self) {
-        // Sets the 3rd bit from the LSB (counting from 0).
+        // Sets the 3rd bit from the LSB.
         self.offset_and_control_bits |= 1 << 3;
     }
 
-    /// Checks if the RST (Reset) control bit is set in the [TCPHeader].
+    /// Returns `true` if the RST (Reset) control bit is set in the TCP header.
     pub fn rst(&self) -> bool {
-        // Stored as the 2nd bit from the LSB (counting from 0).
+        // Stored as the 2nd bit from the LSB.
         (self.offset_and_control_bits >> 2) & 1 == 1
     }
 
-    /// Sets the RST (Reset) control bit in the [TCPHeader] if not already set.
+    /// Sets the RST (Reset) control bit in the TCP header, if not already set.
     pub fn set_rst(&mut self) {
-        // Sets the 2nd bit from the LSB (counting from 0).
+        // Sets the 2nd bit from the LSB.
         self.offset_and_control_bits |= 1 << 2;
     }
 
-    /// Checks if the SYN (Synchronize) control bit is set in the [TCPHeader].
+    /// Returns `true` if the SYN (Synchronize) control bit is set in the TCP
+    /// header.
     pub fn syn(&self) -> bool {
-        // Stored as the 1st bit from the LSB (counting from 0).
+        // Stored as the 1st bit from the LSB.
         (self.offset_and_control_bits >> 1) & 1 == 1
     }
 
-    /// Sets the SYN (Synchronize) control bit in the [TCPHeader] if not already
+    /// Sets the SYN (Synchronize) control bit in the TCP header, if not already
     /// set.
     pub fn set_syn(&mut self) {
-        // Sets the 1st bit from the LSB (counting from 0).
+        // Sets the 1st bit from the LSB.
         self.offset_and_control_bits |= 1 << 1;
     }
 
-    /// Checks if the FIN (Finish) control bit is set in the [TCPHeader].
+    /// Returns `true` if the FIN (Finish) control bit is set in the TCP header.
     pub fn fin(&self) -> bool {
         // Stored as the LSB.
         self.offset_and_control_bits & 1 == 1
     }
 
-    /// Sets the FIN (Finish) control bit in the [TCPHeader] if not already set.
+    /// Sets the FIN (Finish) control bit in the TCP header, if not already set.
     pub fn set_fin(&mut self) {
         // Sets the LSB.
         self.offset_and_control_bits |= 1;
     }
 
-    /// Returns the Window field from the [TCPHeader].
+    /// Returns the Window field from the TCP header.
     pub fn window(&self) -> u16 {
         self.window
     }
 
-    /// Returns the Checksum field from the [TCPHeader].
+    /// Returns the Checksum field from the TCP header.
     pub fn checksum(&self) -> u16 {
         self.checksum
     }
 
-    /// Computes and sets the Checksum field of the [TCPHeader] with the
-    /// provided [IPv4Header] and payload.
-    pub fn set_checksum(&mut self, ip_header: &IPv4Header, payload: &[u8]) {
+    /// Computes and sets the Checksum field of the TCP header with the provided
+    /// IPv4 header and payload.
+    pub fn set_checksum(&mut self, ip_header: &Ipv4Header, payload: &[u8]) {
         self.checksum = self.compute_checksum(ip_header, payload);
     }
 
-    /// Returns the Urgent Pointer field from the [TCPHeader].
+    /// Returns the Urgent Pointer field from the TCP header.
     pub fn urgent_pointer(&self) -> u16 {
         self.urgent_pointer
     }
 
-    /// Returns the Options field from the [TCPHeader].
-    pub fn options(&self) -> TCPOptions {
+    /// Returns the Options field from the TCP header.
+    pub fn options(&self) -> TcpOptions {
         self.options
     }
 
-    /// Sets the Maximum Segment Size (MSS) value for the [TCPHeader].
+    /// Sets the Maximum Segment Size (MSS) option for the TCP header.
     ///
     /// # Errors
     ///
-    /// Returns an error if there is not enough space in the option buffer to
-    /// append the MSS option, or the MSS value provided is 0.
+    /// Returns an error if the options buffer lacks sufficient space to append
+    /// the MSS, or if the provided MSS value is invalid.
     pub fn set_option_mss(&mut self, mss: u16) -> Result<(), String> {
         self.options.set_mss(mss)?;
 
-        // Convert options length to the number of 32-bit words it represents,
-        // and add it to the previous data offset.
+        // Convert options length to representation of total bytes and add to
+        // the previous data offset.
         let new_data_offset = ((self.options.len() >> 2) as u8 + self.data_offset()) as u16;
 
-        // Clear the higher 4-bits (clear previous data offset).
+        // Clear previous data offset value.
         self.offset_and_control_bits &= 0x0FFF;
 
-        // Clear the higher 12-bits of the options length and shift the new
+        // Clear the higher 12-bits of the new data offset and shift the new
         // offset into the higher 4-bits, then combine with the previously
         // cleared offset.
         self.offset_and_control_bits |= (new_data_offset & 0x000F) << 12;
@@ -314,12 +314,13 @@ impl TCPHeader {
         Ok(())
     }
 
-    /// Returns the length of the [TCPHeader] in bytes, including options.
+    /// Returns the length of the TCP header in bytes, including options.
     pub fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN as usize + self.options.len()
     }
 
-    /// Computes the checksum for the [TCPHeader].
+    /// Returns the computed checksum for the TCP header with the provided IPv4
+    /// header and payload.
     ///
     /// The checksum algorithm is:
     ///
@@ -327,8 +328,8 @@ impl TCPHeader {
     /// complement sum of all 16 bit words in the pseudo header, TCP header,
     /// and payload. For purposes of computing the checksum, the value of the
     /// checksum field is zero.
-    pub fn compute_checksum(&self, ip_header: &IPv4Header, payload: &[u8]) -> u16 {
-        // RFC 793 (3.1)
+    pub fn compute_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> u16 {
+        // RFC 793 (3.1):
         //
         // ```text
         //        +--------+--------+--------+--------+
@@ -339,7 +340,7 @@ impl TCPHeader {
         //        |  zero  |  PTCL  |    TCP Length   |
         //        +--------+--------+--------+--------+
         // ```
-        let mut pseudo_header = [0u8; Self::PSEUDO_HEADER_LEN];
+        let mut pseudo_header = [0u8; 12];
 
         pseudo_header[0..4].copy_from_slice(&ip_header.src());
         pseudo_header[4..8].copy_from_slice(&ip_header.dst());
@@ -349,15 +350,15 @@ impl TCPHeader {
         let tcp_len: u16 = (self.header_len() + payload.len()) as u16;
         pseudo_header[10..12].copy_from_slice(&tcp_len.to_be_bytes());
 
-        let (mut buf, nbytes) = self.to_be_bytes();
+        let (mut raw_header, nbytes) = self.to_be_bytes();
+
         // Checksum field must be 0 for computation.
-        buf[16] = 0x00;
-        buf[17] = 0x00;
+        raw_header[16] = 0x00;
+        raw_header[17] = 0x00;
 
-        let tcp_header_bytes = &buf[..nbytes];
+        let tcp_header_bytes = &raw_header[..nbytes];
 
-        // Chain together each byte slice so all word-sized values can be
-        // summed.
+        // Chain together byte slices so each can be processed together.
         let mut checksum_iter = pseudo_header
             .iter()
             .chain(tcp_header_bytes.iter())
@@ -372,8 +373,7 @@ impl TCPHeader {
 
                     sum += word as u32;
 
-                    // Handle potential overflow for each add operation with carry
-                    // folding.
+                    // Handle potential overflow with carry folding.
                     if sum > 0xFFFF {
                         // Adds the higher 16-bits to the lower 16-bits.
                         sum = (sum & 0xFFFF) + (sum >> 16);
@@ -382,26 +382,25 @@ impl TCPHeader {
                 (Some(h), None) => {
                     // If a segment contains an odd number of header and text
                     // octets to be checksummed, the last octet is padded on the
-                    // right with zeros to form a 16 bit word for checksum purposes.
+                    // right with zeros to form a 16 bit word for checksum
+                    // purposes.
                     let word = u16::from_be_bytes([*h, 0x00]);
 
                     sum += word as u32;
 
-                    // Handle potential overflow for each add operation with carry
-                    // folding.
+                    // Handle potential overflow with carry folding.
                     if sum > 0xFFFF {
                         // Adds the higher 16-bits to the lower 16-bits.
                         sum = (sum & 0xFFFF) + (sum >> 16);
                     }
                 }
-                // Covers (None, Some(l)) and (None, None) cases.
                 _ => {
                     break;
                 }
             }
         }
 
-        // Handle any remaining overflow with carry folding.
+        // Handle potential remaining overflow with carry folding.
         while sum > 0xFFFF {
             // Adds the higher 16-bits to the lower 16-bits.
             sum = (sum & 0xFFFF) + (sum >> 16);
@@ -410,9 +409,8 @@ impl TCPHeader {
         !(sum as u16)
     }
 
-    /// Returns the memory representation of the [TCPHeader] as a byte array in
-    /// big-endian (network) byte order as well as the number of bytes actually
-    /// written to the byte array, since it may be less then the total length.
+    /// Returns the memory representation of the TCP header as a byte array in
+    /// big-endian (network) byte order and the number of bytes written.
     pub fn to_be_bytes(&self) -> ([u8; Self::MAX_HEADER_LEN as usize], usize) {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
         let size = self.header_len();
@@ -431,12 +429,12 @@ impl TCPHeader {
         (raw_header, size)
     }
 
-    /// Reads the [TCPHeader] from the given input stream.
+    /// Reads a TCP header from the given input stream.
     ///
     /// # Errors
     ///
-    /// Returns an error if reading from the input stream fails or invalid data
-    /// is provided.
+    /// Returns an error if reading from the input stream fails or a TCP header
+    /// could not be parsed.
     pub fn read<T: io::Read>(input: &mut T) -> Result<Self, String> {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
 
@@ -444,60 +442,59 @@ impl TCPHeader {
             .read(&mut raw_header[..])
             .map_err(|err| format!("failed to read TCP header from input: {err}"))?;
 
-        TCPHeader::try_from(&raw_header[..nbytes])
+        TcpHeader::try_from(&raw_header[..nbytes])
     }
 
-    /// Writes the [TCPHeader] to the given output stream.
+    /// Writes the TCP header to the given output stream.
     ///
     /// # Notes
     ///
-    /// The checksum is NOT automatically computed. It is the callers
-    /// responsibility to ensure the checksum is computed before writing to an
-    /// output stream.
+    /// Checksum is NOT automatically computed. It is the callers responsibility
+    /// to ensure the checksum is computed before writing.
     ///
     /// # Errors
     ///
     /// Returns an error if writing to the output stream fails.
     pub fn write<T: io::Write>(&self, output: &mut T) -> Result<(), String> {
-        let (buf, nbytes) = self.to_be_bytes();
+        let (raw_header, nbytes) = self.to_be_bytes();
 
         output
-            .write_all(&buf[..nbytes])
+            .write_all(&raw_header[..nbytes])
             .map_err(|err| format!("failed to write TCP header to output: {err}"))?;
 
         Ok(())
     }
 }
 
-impl TryFrom<&[u8]> for TCPHeader {
+impl TryFrom<&[u8]> for TcpHeader {
     type Error = String;
 
     fn try_from(header_raw: &[u8]) -> Result<Self, Self::Error> {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
             return Err(format!(
-                "failed to read TCP header from input: expected header length to be greater than: {}, provided header length: {}",
-                Self::MIN_HEADER_LEN,
-                header_raw.len()
+                "failed to read TCP header from input: provided header length: {}, minimum header length: {}",
+                header_raw.len(),
+                Self::MIN_HEADER_LEN
             ));
         }
 
         let offset_and_control_bits = u16::from_be_bytes([header_raw[12], header_raw[13]]);
-
         let data_offset = offset_and_control_bits >> 12;
+
         if data_offset < Self::MIN_DATA_OFFSET {
             return Err(format!(
-                "failed to read TCP header from input: expected data offset to be greater than: {}, provided data offset: {}",
-                Self::MIN_DATA_OFFSET,
-                data_offset
+                "failed to read TCP header from input: provided data offset: {}, minimum data offset: {}",
+                data_offset,
+                Self::MIN_DATA_OFFSET
             ));
         }
 
         // There are less bytes in the buffer than advertised by data offset.
         if (data_offset << 2) > header_raw.len() as u16 {
             return Err(format!(
-                "failed to read TCP header from input: provided data offset (in bytes): {}, provied header length: {}",
-                data_offset >> 2,
+                "failed to read TCP header from input: provied header length: {}, indicated header length: {}",
                 header_raw.len(),
+                data_offset >> 2
             ));
         }
 
@@ -521,30 +518,32 @@ impl TryFrom<&[u8]> for TCPHeader {
             checksum: u16::from_be_bytes([header_raw[16], header_raw[17]]),
             urgent_pointer: u16::from_be_bytes([header_raw[18], header_raw[19]]),
             options: {
+                // There are advertised options present in the header.
                 if data_offset > Self::MIN_DATA_OFFSET {
                     let rest_len = header_raw[20..].len();
 
-                    // SAFETY: Already check if data offset is greater than or
-                    // equal to the minimum.
+                    // SAFETY: Checked data offset >= Self::MIN_DATA_OFFSET.
                     if ((data_offset - Self::MIN_DATA_OFFSET) << 2) as usize != rest_len {
                         return Err(format!(
-                            "failed to read TCP header from input: provided options length: {}, options length indicated by data offset: {}",
+                            "failed to read TCP header from input: provided options length: {}, indicated options length: {}",
                             rest_len,
                             (data_offset - Self::MIN_DATA_OFFSET) << 2
                         ));
                     }
 
-                    TCPOptions::try_from(&header_raw[20..(data_offset << 2) as usize])
+                    // Limit range so payload bytes are not accidentally read as
+                    // options.
+                    TcpOptions::try_from(&header_raw[20..(data_offset << 2) as usize])
                         .map_err(|err| format!("failed to read TCP header from input: {err}"))?
                 } else {
-                    TCPOptions::new()
+                    TcpOptions::new()
                 }
             },
         })
     }
 }
 
-impl Default for TCPHeader {
+impl Default for TcpHeader {
     fn default() -> Self {
         Self {
             ack_number: 0,
@@ -558,7 +557,7 @@ impl Default for TCPHeader {
             // Bit 13 = 0 (RST)
             // Bit 14 = 0 (SYN)
             // Bit 15 = 0 (FIN)
-            offset_and_control_bits: 0b0101000000000000,
+            offset_and_control_bits: 0b0101_000000_000000,
             checksum: 0,
             urgent_pointer: 0,
             options: Default::default(),
@@ -571,18 +570,18 @@ impl Default for TCPHeader {
     }
 }
 
-/// Representation of a TCP Options field in a [TCPHeader].
+/// Representation of a TCP Options field in a TCP header.
 #[derive(Debug, Clone, Copy)]
-pub struct TCPOptions {
+pub struct TcpOptions {
     len: usize,
     buf: [u8; 40],
 }
 
-impl TCPOptions {
+impl TcpOptions {
     /// Maximum length of TCP options in bytes.
     pub const MAX_OPTIONS_LEN: u16 = 40;
 
-    /// Creates a new empty [TCPOptions].
+    /// Creates a new empty TCP options.
     pub fn new() -> Self {
         Self {
             len: 0,
@@ -590,7 +589,7 @@ impl TCPOptions {
         }
     }
 
-    /// Returns the Maximum Segment Size (MSS) value from the [TCPOptions], if
+    /// Returns the Maximum Segment Size (MSS) value from the TCP options, if
     /// present.
     pub fn mss(&self) -> Option<u16> {
         let opts_slice = self.as_slice();
@@ -604,16 +603,18 @@ impl TCPOptions {
                     continue;
                 }
                 OptionKind::MSS => {
-                    // Read the actual MSS value.
+                    // RFC 793 (3.1):
                     //
                     // ```text
                     //          1        2        3         4
                     //        +--------+--------+---------+--------+
                     //        |00000010|00000100|   max seg size   |
                     //        +--------+--------+---------+--------+
-                    //         ^                 ^^^^^^^^^^^^^^^^^^
-                    //         |-- Here           Want these bytes
+                    //           ^               ^^^^^^^^^^^^^^^^^^
+                    //           |-- Here         Want these bytes
                     // ```
+
+                    // Length for MSS option must be 0x04.
                     if opts_slice[i + 1] != 0x04 {
                         break;
                     }
@@ -626,57 +627,59 @@ impl TCPOptions {
         None
     }
 
-    /// Sets the Maximum Segment Size (MSS) value for the [TCPOptions], appending
+    /// Sets the Maximum Segment Size (MSS) value for the TCP options, appending
     /// it to the current options buffer.
     ///
     /// # Errors
     ///
-    /// Returns an error if there is not enough space in the option buffer to
-    /// append the MSS option, or the MSS value provided is 0.
+    /// Returns an error if the options buffer lacks sufficient space to append
+    /// the MSS, or if the provided MSS value is invalid.
     pub fn set_mss(&mut self, mss: u16) -> Result<(), String> {
         if self.mss().is_some() {
-            // Skip setting MSS option is it already exists.
+            // Skip setting MSS option is it already exists...
         } else {
+            const MSS_LEN: usize = 4;
+
             if mss == 0 {
-                return Err(format!(
-                    "failed to append MSS option to buffer: invalid MSS value: {mss}",
-                ));
+                return Err(
+                    "failed to append MSS option to TCP options: invalid MSS value: 0".into(),
+                );
             }
 
             let opts_len = self.len();
 
-            if (opts_len + 4) as u16 > Self::MAX_OPTIONS_LEN {
+            if (opts_len + MSS_LEN) as u16 > Self::MAX_OPTIONS_LEN {
                 return Err(format!(
-                    "failed to append MSS option to buffer: buffer length if appended {}, maximum allowed buffer length: {}",
-                    opts_len + 4,
+                    "failed to append MSS option to TCP options: options length if appended {}, maximum allowed buffer length: {}",
+                    opts_len + MSS_LEN,
                     Self::MAX_OPTIONS_LEN
                 ));
             }
 
-            let mut mss_option = [0u8; 4];
+            let mut mss_option = [0u8; MSS_LEN];
 
             mss_option[0] = OptionKind::MSS as u8;
             mss_option[1] = 0x04;
             mss_option[2..4].copy_from_slice(&mss.to_be_bytes());
 
-            self.buf[opts_len..opts_len + 4].copy_from_slice(&mss_option);
-            self.len += 4;
+            self.buf[opts_len..opts_len + MSS_LEN].copy_from_slice(&mss_option);
+            self.len += MSS_LEN;
         }
 
         Ok(())
     }
 
-    /// Returns the length of the [TCPOptions] in bytes.
+    /// Returns the length of the TCP options in bytes.
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns `true` if the [TCPOptions] contains no bytes.
+    /// Returns `true` if the TCP options contains no bytes.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Returns an immutable slice containing the [TCPOptions].
+    /// Returns an immutable slice containing the TCP options.
     pub fn as_slice(&self) -> &[u8] {
         debug_assert!(self.len <= 40);
 
@@ -685,35 +688,37 @@ impl TCPOptions {
     }
 }
 
-impl TryFrom<&[u8]> for TCPOptions {
+impl TryFrom<&[u8]> for TcpOptions {
     type Error = String;
 
-    fn try_from(byte_slice: &[u8]) -> Result<Self, Self::Error> {
-        if byte_slice.len() > Self::MAX_OPTIONS_LEN as usize {
+    fn try_from(opts_slice: &[u8]) -> Result<Self, Self::Error> {
+        if opts_slice.len() > Self::MAX_OPTIONS_LEN as usize {
             return Err(format!(
-                "expected options length to be less than: {}, provided options length: {}",
-                Self::MAX_OPTIONS_LEN,
-                byte_slice.len()
+                "provided options length: {}, maximum allowed options length: {}",
+                opts_slice.len(),
+                Self::MAX_OPTIONS_LEN
             ));
         }
 
-        let len = byte_slice.len();
+        let len = opts_slice.len();
 
-        // Ensure options present are aligned to a 4-byte boundary.
+        // Ensure options present are aligned to a 4-byte boundary, adding
+        // padding if necessary.
         let padding = if len & 0b11 != 0 { 4 } else { 0 };
 
         Ok(Self {
+            // Truncate len to the nearest multiple of 4 before adding padding.
             len: ((len >> 2) << 2) + padding,
             buf: {
                 let mut buf = [0; 40];
-                buf[..len].copy_from_slice(byte_slice);
+                buf[..len].copy_from_slice(opts_slice);
                 buf
             },
         })
     }
 }
 
-impl Default for TCPOptions {
+impl Default for TcpOptions {
     fn default() -> Self {
         Self::new()
     }
@@ -751,7 +756,8 @@ pub enum OptionKind {
     /// This option code may be used between options, for example, to align the
     /// beginning of a subsequent option on a word boundary. There is no
     /// guarantee that senders will use this option, so receivers must be
-    /// prepared to process options even if they do not begin on a word boundary.
+    /// prepared to process options even if they do not begin on a word
+    /// boundary.
     NOP = 0o01,
     /// Maximum Segment Size
     ///
@@ -766,8 +772,9 @@ pub enum OptionKind {
     ///
     /// If this option is present, then it communicates the maximum receive
     /// segment size at the TCP which sends this segment. This field must only
-    /// be sent in the initial connection request (i.e., in segments with the SYN control bit set).
-    /// If this option is not used, any segment size is allowed.
+    /// be sent in the initial connection request
+    /// (i.e., in segments with the SYN control bit set). If this option is not
+    /// used, any segment size is allowed.
     MSS = 0o02,
 }
 
@@ -795,7 +802,7 @@ mod tests {
 
         let mut header_bytes = &header_bytes[..];
 
-        let header = TCPHeader::read(&mut header_bytes);
+        let header = TcpHeader::read(&mut header_bytes);
         assert!(header.is_ok());
         let header = header.unwrap();
 
@@ -827,7 +834,7 @@ mod tests {
 
         let mut header_bytes = &header_bytes[..];
 
-        let header = TCPHeader::read(&mut header_bytes);
+        let header = TcpHeader::read(&mut header_bytes);
         assert!(header.is_ok());
         let header = header.unwrap();
 
@@ -850,7 +857,7 @@ mod tests {
 
         let (buf, nbytes) = header.to_be_bytes();
 
-        let header = TCPHeader::try_from(&buf[..nbytes]);
+        let header = TcpHeader::try_from(&buf[..nbytes]);
         assert!(header.is_ok());
         let header = header.unwrap();
 
@@ -880,11 +887,11 @@ mod tests {
             0x78, 0x27, 0xe4, 0xe7, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07,
         ];
 
-        let header = TCPHeader::try_from(&header_bytes[..]);
+        let header = TcpHeader::try_from(&header_bytes[..]);
         assert!(header.is_ok());
         let mut header = header.unwrap();
 
-        let iph = IPv4Header::new(
+        let iph = Ipv4Header::new(
             [192, 168, 0, 1],
             [192, 168, 0, 44],
             header.header_len() as u16,
@@ -903,7 +910,8 @@ mod tests {
 
     #[test]
     fn tcp_header_flags_bit_isolation_valid() {
-        // Check for all permutations of URG, ACK, PSH, RST, SYN, and FIN bits.
+        // Check if all permutations of URG, ACK, PSH, RST, SYN, and FIN bits
+        // can be parsed.
         for flags in 0u8..=0b00111111 {
             let mut header_bytes: [u8; 40] = [
                 0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x00,
@@ -913,7 +921,7 @@ mod tests {
 
             header_bytes[13] = flags;
 
-            let header = TCPHeader::try_from(&header_bytes[..]);
+            let header = TcpHeader::try_from(&header_bytes[..]);
             assert!(header.is_ok(),);
             let header = header.unwrap();
 
@@ -966,7 +974,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let header = TCPHeader::try_from(&header_bytes[..]);
+        let header = TcpHeader::try_from(&header_bytes[..]);
         assert!(header.is_ok());
 
         assert_eq!(header.unwrap().data_offset(), 15);
@@ -979,7 +987,7 @@ mod tests {
             0xfa, 0xf0, 0x80, 0x3e, 0x00, 0x00,
         ];
 
-        let header = TCPHeader::try_from(&header_bytes[..]);
+        let header = TcpHeader::try_from(&header_bytes[..]);
         assert!(header.is_ok());
         let mut header = header.unwrap();
 
@@ -993,7 +1001,7 @@ mod tests {
 
         let (buf, nbytes) = header.to_be_bytes();
 
-        assert!(TCPHeader::try_from(&buf[..nbytes]).is_ok());
+        assert!(TcpHeader::try_from(&buf[..nbytes]).is_ok());
     }
 
     #[test]
@@ -1009,7 +1017,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let header = TCPHeader::try_from(&header_bytes[..]);
+        let header = TcpHeader::try_from(&header_bytes[..]);
         assert!(header.is_err());
     }
 }

@@ -1,9 +1,8 @@
 use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::mem;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
-use std::ptr;
+use std::{mem, ptr};
 
 /// The Maximum Transmission Unit (MTU) for the TUN interface. Does NOT account
 /// for packet information if configured when creating TUN interface.
@@ -27,23 +26,23 @@ impl Tun {
     /// - Proto [2 bytes] [EtherType](https://en.wikipedia.org/wiki/EtherType)
     /// - Raw protocol (IP, IPv6, etc) frame [MTU bytes]
     ///
-    /// # Errors
-    ///
-    /// Returns an error if there are issues with the specified name or if the
-    /// process lacks the necessary privileges (CAP_NET_ADMIN).
-    ///
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure that the provided device
     /// name does not contain any null (`\0`) bytes, to avoid unexpected
     /// behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is an issue with the specified name or if the
+    /// process lacks the necessary privileges (CAP_NET_ADMIN).
     pub fn new(dev: &str) -> io::Result<Self> {
         Self::create_tun(dev, true)
     }
 
     /// Creates a new TUN virtual network device without packet information.
     ///
-    /// Packets received on this device will exclude the leading 4 bytes of
+    /// Packets received on this device will EXCLUDE the leading 4 bytes of
     /// packet info:
     ///
     /// - Flags [2 bytes]
@@ -51,16 +50,16 @@ impl Tun {
     ///
     /// and only contain the raw protocol (IP, IPv6, etc) frame [MTU bytes].
     ///
-    /// # Errors
-    ///
-    /// Returns an error if there are issues with the specified name or if the
-    /// process lacks the necessary privileges (CAP_NET_ADMIN).
-    ///
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure that the provided device
     /// name does not contain any null (`\0`) bytes, to avoid unexpected
     /// behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is an issue with the specified name or if the
+    /// process lacks the necessary privileges (CAP_NET_ADMIN).
     pub fn without_packet_info(dev: &str) -> io::Result<Self> {
         Self::create_tun(dev, false)
     }
@@ -84,9 +83,9 @@ impl Tun {
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure the buffer used is large
-    /// enough. It's size should be the MTU of the interface (typically 1500 bytes) + 4 bytes
-    /// for the prepended packet information if configured, otherwise the packet will be
-    /// truncated to fit the buffer.
+    /// enough. It's size should be the MTU of the interface
+    /// (typically 1500 bytes) + 4 bytes for the packet information if
+    /// configured, otherwise the packet will be truncated.
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         (&self.fd).read(buf)
     }
@@ -101,14 +100,14 @@ impl Tun {
     ///
     /// Many errors are silently handled by the OS kernel, often resulting in
     /// dropped packets. While packets may appear to be sent successfully, they
-    /// could be discarded by the kernel due to validation failure, high send
-    /// frequency, or unassigned destination addresses.
+    /// could be discarded by the kernel due to checksum validation failure,
+    /// high send frequency, or unassigned destination addresses.
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
         (&self.fd).write(buf)
     }
 
     fn create_tun(dev: &str, with_packet_info: bool) -> io::Result<Self> {
-        // `IFNAMSIZ` defines the length of `ifr_name` field.
+        // `IFNAMSIZ` defines the length of `ifr_name` field in `ifreq` struct.
         if dev.len() >= libc::IFNAMSIZ {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -123,9 +122,9 @@ impl Tun {
 
         let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
 
-        // Flags: IFF_TUN   - TUN device (no Ethernet headers)
+        // IFF_TUN   - TUN device (no Ethernet headers)
         //
-        //        IFF_NO_PI - Do not provide packet information
+        // IFF_NO_PI - Do not provide packet information
         let flags = if with_packet_info {
             libc::IFF_TUN
         } else {
@@ -146,7 +145,7 @@ impl Tun {
             return Err(io::Error::last_os_error());
         }
 
-        // Read back assigned interface name, as it may be different.
+        // Read back assigned interface name.
         let name = unsafe {
             CStr::from_ptr(ifr.ifr_name.as_ptr())
                 .to_string_lossy()
