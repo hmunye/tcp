@@ -684,7 +684,7 @@ impl TcpOptions {
         debug_assert!(self.len <= 40);
 
         // SAFETY: Verified that self.len is less then 40 bytes.
-        unsafe { std::slice::from_raw_parts(self.buf.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts(self.buf.as_ptr(), self.len) }
     }
 }
 

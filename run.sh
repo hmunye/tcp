@@ -30,7 +30,7 @@ sudo ip addr add 10.0.0.1/32 peer 10.0.0.2 dev tun0
 
 if [ -n "${CLIENT-}" ]; then
     # Listening server (netcat).
-    nc -l -s 10.0.0.1 -p 8080 &
+    nc -l -s 10.0.0.1 -p 8080 -e /usr/bin/cat &
 fi
 
 trap "kill $pid" INT TERM

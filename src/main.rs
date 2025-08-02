@@ -7,11 +7,11 @@ use tcp::protocol::{Socket, TCB};
 use tcp::tun_tap::{self, MTU_SIZE};
 use tcp::{error, info, warn};
 
-const HOST_ADDR: [u8; 4] = [10, 0, 0, 2];
-const HOST_PORT: u16 = 44932;
+const SRC_ADDR: [u8; 4] = [10, 0, 0, 2];
+const SRC_PORT: u16 = 44932;
 
-const REMOTE_ADDR: [u8; 4] = [10, 0, 0, 1];
-const REMOTE_PORT: u16 = 8080;
+const DST_ADDR: [u8; 4] = [10, 0, 0, 1];
+const DST_PORT: u16 = 8080;
 
 fn main() {
     let mut nic = tun_tap::Tun::without_packet_info("tun0").unwrap_or_else(|err| {
@@ -31,11 +31,12 @@ fn main() {
         io::stdin().read_line(&mut cont).unwrap();
         drop(cont);
 
-        // Written backwards so the later socket derived from the parsed headers
-        // can be matched with a TCB entry.
-        let socket = Socket::new((REMOTE_ADDR, REMOTE_PORT), (HOST_ADDR, HOST_PORT));
+        let socket = Socket {
+            src: (SRC_ADDR, SRC_PORT),
+            dst: (DST_ADDR, DST_PORT),
+        };
 
-        let conn = TCB::on_conn_init(&mut nic, &socket).unwrap_or_else(|err| {
+        let conn = TCB::on_conn_init(&mut nic, socket).unwrap_or_else(|err| {
             error!("failed to initiate TCP connection: {err}");
             process::exit(1);
         });
@@ -68,7 +69,14 @@ fn listen_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB>) -
                         let dst_port = tcph.dst_port();
                         let payload = &buf[iph.header_len() + tcph.header_len()..nbytes];
 
-                        let socket = Socket::new((src, src_port), (dst, dst_port));
+                        // Packets are from the peer's perspective, so src/dst
+                        // are flipped. Reverse them to match the format used
+                        // when initiating connections, ensuring consistent
+                        // socket lookup in the connection hash map.
+                        let socket = Socket {
+                            src: (dst, dst_port),
+                            dst: (src, src_port),
+                        };
 
                         match connections.entry(socket) {
                             Entry::Vacant(entry) => match TCB::on_conn_req(nic, &iph, &tcph) {

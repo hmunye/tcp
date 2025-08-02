@@ -16,30 +16,12 @@ const DEFAULT_MSS: u16 = 536;
 const RECV_WND_SIZE: usize = 4096;
 
 /// Representation of a unique TCP connection.
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Socket {
     /// Source address and port.
-    src: ([u8; 4], u16),
+    pub src: ([u8; 4], u16),
     /// Destination address and port.
-    dst: ([u8; 4], u16),
-}
-
-impl Socket {
-    /// Creates a new socket using the provided (source address, source port)
-    /// and (destination address, destination port) pairs.
-    pub fn new(src: ([u8; 4], u16), dst: ([u8; 4], u16)) -> Self {
-        Self { src, dst }
-    }
-
-    /// Returns the (source address, source port) pair of the socket.
-    pub fn src(&self) -> ([u8; 4], u16) {
-        self.src
-    }
-
-    /// Returns the (destination address, destination port) pair of the socket.
-    pub fn dst(&self) -> ([u8; 4], u16) {
-        self.dst
-    }
+    pub dst: ([u8; 4], u16),
 }
 
 /// Transmission Control Block (TCB) which stores information about the state
@@ -48,6 +30,8 @@ impl Socket {
 pub struct TCB {
     /// Current state of the TCP connection.
     state: ConnectionState,
+    /// Connection details of the host and remote TCPs.
+    sock: Socket,
     /// Send Sequence Space for the TCP connection.
     snd: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
@@ -184,12 +168,13 @@ impl TCB {
     ///
     /// Returns an error if the TCP segment could not be constructed or if
     /// writing to the TUN device fails.
-    pub fn on_conn_init(nic: &mut Tun, socket: &Socket) -> Result<Self, String> {
+    pub fn on_conn_init(nic: &mut Tun, socket: Socket) -> Result<Self, String> {
         // Initial Send Sequence Number.
         let iss = 0;
 
         let conn = TCB {
             state: ConnectionState::SYN_SENT,
+            sock: socket,
             snd: SendSeqSpace {
                 // Should be the value of the last ACK received. Set to ISS
                 // since there have been no sequence numbers ACKed yet.
@@ -230,25 +215,7 @@ impl TCB {
             open_kind: OpenKind::ACTIVE_OPEN,
         };
 
-        let mut syn = TcpHeader::new(socket.dst().1, socket.src().1, conn.snd.iss, conn.rcv.wnd);
-
-        syn.set_syn();
-        syn.set_option_mss(1460)?;
-
-        let mut ip = Ipv4Header::new(
-            socket.dst().0,
-            socket.src().0,
-            syn.header_len() as u16,
-            64,
-            Protocol::TCP,
-        )?;
-
-        // Checksum must be computed for each header.
-        ip.set_header_checksum();
-        syn.set_checksum(&ip, &[]);
-
-        conn.write(nic, &ip, &syn, &[])
-            .map_err(|err| format!("(ACTIVE_OPEN) failed to write SYN: {err}"))?;
+        conn.send_syn(nic)?;
 
         Ok(conn)
     }
@@ -269,18 +236,10 @@ impl TCB {
             return Err("(LISTEN) received RST".into());
         }
 
-        // Any acknowledgment is bad if it arrives on a connection still in the
-        // LISTEN state.
-        if tcph.ack() {
-            // TODO: Respond with RST
-            // ```
-            //  <SEQ=SEG.ACK><CTL=RST>
-            // ```
-            return Err("(LISTEN) received ACK: sending RST".into());
-        }
-
-        if !tcph.syn() {
-            return Err("(LISTEN) did not receive SYN".into());
+        // Do not process the FIN if the state is CLOSED, LISTEN or SYN-SENT
+        // since the SEG.SEQ cannot be validated; drop the segment and return.
+        if tcph.fin() {
+            return Err("(LISTEN) received FIN".into());
         }
 
         // Initial Send Sequence Number.
@@ -288,6 +247,11 @@ impl TCB {
 
         let conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
+            // Stored in the reverse order of the peer's perspective.
+            sock: Socket {
+                src: (iph.dst(), tcph.dst_port()),
+                dst: (iph.src(), tcph.src_port()),
+            },
             snd: SendSeqSpace {
                 // Should be the value of the last ACK received. Set to ISS
                 // since there have been no sequence numbers ACKed yet.
@@ -323,29 +287,23 @@ impl TCB {
             open_kind: OpenKind::PASSIVE_OPEN,
         };
 
-        let mut syn_ack =
-            TcpHeader::new(tcph.dst_port(), tcph.src_port(), conn.snd.iss, conn.rcv.wnd);
+        // Any acknowledgment is bad if it arrives on a connection still in the
+        // LISTEN state.
+        if tcph.ack() {
+            // Respond with RST
+            // ```
+            //  <SEQ=SEG.ACK><CTL=RST>
+            // ```
+            conn.send_rst(nic, tcph.ack_number(), 0)?;
 
-        // Acknowledge the peer's SYN.
-        syn_ack.set_ack_number(conn.rcv.nxt);
-        syn_ack.set_syn();
-        syn_ack.set_ack();
-        syn_ack.set_option_mss(1460)?;
+            return Err("(LISTEN) received ACK: sending RST".into());
+        }
 
-        let mut ip = Ipv4Header::new(
-            iph.dst(),
-            iph.src(),
-            syn_ack.header_len() as u16,
-            64,
-            Protocol::TCP,
-        )?;
+        if !tcph.syn() {
+            return Err("(LISTEN) did not receive SYN".into());
+        }
 
-        // Checksum must be computed for each header.
-        ip.set_header_checksum();
-        syn_ack.set_checksum(&ip, &[]);
-
-        conn.write(nic, &ip, &syn_ack, &[])
-            .map_err(|err| format!("(LISTEN) failed to write SYN_ACK: {err}"))?;
+        conn.send_syn_ack(nic)?;
 
         Ok(conn)
     }
@@ -439,35 +397,10 @@ impl TCB {
         let seg_len =
             payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
 
-        if !(self.state == ConnectionState::SYN_SENT) {
-            // Respond with ACK
-            // ```
-            //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-            // ```
-            let mut send_ack = || {
-                let mut ack =
-                    TcpHeader::new(tcph.dst_port(), tcph.src_port(), self.snd.nxt, self.rcv.wnd);
-
-                ack.set_ack_number(self.rcv.nxt);
-                ack.set_ack();
-
-                let mut ip = Ipv4Header::new(
-                    iph.dst(),
-                    iph.src(),
-                    ack.header_len() as u16,
-                    64,
-                    Protocol::TCP,
-                )?;
-
-                ip.set_header_checksum();
-                ack.set_checksum(&ip, &[]);
-
-                self.write(nic, &ip, &ack, &[])
-                    .map_err(|err| format!("({:?}) failed to write ACK: {err}", self.state))?;
-
-                Ok::<(), String>(())
-            };
-
+        if !matches!(
+            self.state,
+            ConnectionState::CLOSED | ConnectionState::LISTEN | ConnectionState::SYN_SENT
+        ) {
             let nxt_wnd = self.rcv.nxt.wrapping_add(self.rcv.wnd as u32);
 
             match seg_len {
@@ -476,11 +409,15 @@ impl TCB {
                         // Case 1: SEG.SEQ = RCV.NXT
                         if seqn != self.rcv.nxt {
                             if !tcph.rst() {
-                                send_ack()?;
+                                // Respond with ACK
+                                // ```
+                                //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                                // ```
+                                self.send_ack(nic, &[])?;
                             }
 
                             return Err(format!(
-                                "({:?}) invalid SEQ number {}: expected SEQ number {}",
+                                "({:?}) invalid SEQ number {}: expected SEQ number: {}",
                                 self.state, seqn, self.rcv.nxt
                             ));
                         }
@@ -489,7 +426,11 @@ impl TCB {
                         // Case 2: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                         if !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd) {
                             if !tcph.rst() {
-                                send_ack()?;
+                                // Respond with ACK
+                                // ```
+                                //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                                // ```
+                                self.send_ack(nic, &[])?;
                             }
 
                             return Err(format!(
@@ -508,7 +449,11 @@ impl TCB {
                         // Case 3: not acceptable (we have received bytes when
                         // we are advertising a window size of 0).
                         if !tcph.rst() {
-                            send_ack()?;
+                            // Respond with ACK
+                            // ```
+                            //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                            // ```
+                            self.send_ack(nic, &[])?;
                         }
 
                         return Err(format!(
@@ -527,7 +472,11 @@ impl TCB {
                             )
                         {
                             if !tcph.rst() {
-                                send_ack()?;
+                                // Respond with ACK
+                                // ```
+                                //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                                // ```
+                                self.send_ack(nic, &[])?;
                             }
 
                             return Err(format!(
@@ -547,14 +496,25 @@ impl TCB {
         loop {
             match self.state {
                 ConnectionState::SYN_SENT => {
+                    // Do not process the FIN if the state is CLOSED, LISTEN or
+                    // SYN-SENT since the SEG.SEQ cannot be validated; drop the
+                    // segment and return.
+                    if tcph.fin() {
+                        return Err(format!("({:?}) received FIN", self.state));
+                    }
+
                     let mut validate_ack = || {
                         // Peer did not correctly ACK our SYN.
                         if ackn <= self.snd.iss || ackn > self.snd.nxt {
                             if !tcph.rst() {
-                                // TODO: Respond with RST
+                                // Respond with RST
                                 // ```
                                 //  <SEQ=SEG.ACK><CTL=RST>
                                 // ```
+                                self.send_rst(nic, ackn, 0)?;
+
+                                // TODO: Probably should delete TCB and inform
+                                // user the connection was reset.
                             }
 
                             return Err(format!(
@@ -609,34 +569,17 @@ impl TCB {
                             self.snd.una = ackn;
                             self.state = ConnectionState::ESTABLISHED;
 
+                            // Send payload with ACK.
+                            let payload = b"hello, world";
+
                             // Send ACK
                             // ```
                             //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
                             // ```
-                            let mut ack = TcpHeader::new(
-                                tcph.dst_port(),
-                                tcph.src_port(),
-                                self.snd.nxt,
-                                self.rcv.wnd,
-                            );
+                            self.send_ack(nic, payload)?;
 
-                            ack.set_ack_number(self.rcv.nxt);
-                            ack.set_ack();
-
-                            let mut ip = Ipv4Header::new(
-                                iph.dst(),
-                                iph.src(),
-                                ack.header_len() as u16,
-                                64,
-                                Protocol::TCP,
-                            )?;
-
-                            ip.set_header_checksum();
-                            ack.set_checksum(&ip, &[]);
-
-                            self.write(nic, &ip, &ack, &[]).map_err(|err| {
-                                format!("({:?}) failed to write ACK: {err}", self.state)
-                            })?;
+                            // Accounts for the bytes just sent.
+                            self.snd.nxt += payload.len() as u32;
                         }
                         (true, false) => {
                             // Case 2: Only SYN received
@@ -658,35 +601,15 @@ impl TCB {
                             // ```
                             // <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
                             // ```
-                            let mut syn_ack = TcpHeader::new(
-                                tcph.dst_port(),
-                                tcph.src_port(),
-                                self.snd.iss,
-                                self.rcv.wnd,
-                            );
-
-                            syn_ack.set_ack_number(self.rcv.nxt);
-                            syn_ack.set_syn();
-                            syn_ack.set_ack();
-
-                            let mut ip = Ipv4Header::new(
-                                iph.dst(),
-                                iph.src(),
-                                syn_ack.header_len() as u16,
-                                64,
-                                Protocol::TCP,
-                            )?;
-
-                            ip.set_header_checksum();
-                            syn_ack.set_checksum(&ip, &[]);
-
-                            self.write(nic, &ip, &syn_ack, &[]).map_err(|err| {
-                                format!("({:?}) failed to write ACK: {err}", self.state)
-                            })?;
+                            self.send_syn_ack(nic)?;
                         }
                         (false, true) => {
                             // Case 3: Only ACK received
                             // (send RST or drop segment).
+
+                            // If the ACK number received is valid, we continue
+                            // to wait in the SYN_SENT state for a valid SYN or
+                            // SYN_ACK segment.
                             validate_ack()?;
                         }
                         (false, false) => {
@@ -703,6 +626,7 @@ impl TCB {
                 }
                 ConnectionState::SYN_RECEIVED => {
                     if tcph.rst() {
+                        // TODO: delete the TCB in either case.
                         match self.open_kind {
                             OpenKind::PASSIVE_OPEN => {
                                 self.state = ConnectionState::LISTEN;
@@ -713,8 +637,6 @@ impl TCB {
                                 ));
                             }
                             OpenKind::ACTIVE_OPEN => {
-                                // TODO: enter the CLOSED state and delete the
-                                // TCB.
                                 self.state = ConnectionState::CLOSED;
 
                                 return Err(format!(
@@ -729,18 +651,30 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
-                        // TODO: Respond with RST
+                        // Respond with RST
                         // ```
                         //  <SEQ=SEG.ACK><CTL=RST>
                         // ```
+                        self.send_rst(nic, ackn, 0)?;
+
                         return Err(format!("({:?}) received SYN: connection reset", self.state));
                     }
 
+                    // Peer wants to terminate connection gracefully.
+                    if tcph.fin() {
+                        self.state = ConnectionState::CLOSE_WAIT;
+                        // To account for the FIN.
+                        self.rcv.nxt += 1;
+
+                        self.send_ack(nic, &[])?;
+
+                        return Err(format!(
+                            "({:?}) received FIN: connection closing",
+                            self.state
+                        ));
+                    }
+
                     if !tcph.ack() {
-                        // TODO: Respond with RST
-                        // ```
-                        //  <SEQ=SEG.ACK><CTL=RST>
-                        // ```
                         return Err(format!("({:?}) did not receive ACK", self.state));
                     }
 
@@ -751,6 +685,12 @@ impl TCB {
                         ackn,
                         self.snd.nxt.wrapping_add(1),
                     ) {
+                        // Respond with RST
+                        // ```
+                        //  <SEQ=SEG.ACK><CTL=RST>
+                        // ```
+                        self.send_rst(nic, ackn, 0)?;
+
                         return Err(format!(
                             "({:?}) unacceptable ACK number {}: expected ACK number between {} and {} (inclusive of both)",
                             self.state,
@@ -773,11 +713,27 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
-                        // TODO: Respond with RST
+                        // Respond with RST
                         // ```
                         //  <SEQ=SEG.ACK><CTL=RST>
                         // ```
+                        self.send_rst(nic, ackn, 0)?;
+
                         return Err(format!("({:?}) received SYN: connection reset", self.state));
+                    }
+
+                    // Peer wants to terminate connection gracefully.
+                    if tcph.fin() {
+                        self.state = ConnectionState::CLOSE_WAIT;
+                        // To account for the FIN.
+                        self.rcv.nxt += 1;
+
+                        self.send_ack(nic, &[])?;
+
+                        return Err(format!(
+                            "({:?}) received FIN: connection closing",
+                            self.state
+                        ));
                     }
 
                     if !tcph.ack() {
@@ -790,33 +746,10 @@ impl TCB {
                             self.state, ackn
                         ));
                     } else if ackn > self.snd.nxt {
-                        let mut ack = TcpHeader::new(
-                            tcph.dst_port(),
-                            tcph.src_port(),
-                            self.snd.nxt,
-                            self.rcv.wnd,
-                        );
-
-                        ack.set_ack_number(self.rcv.nxt);
-                        ack.set_ack();
-
-                        let mut ip = Ipv4Header::new(
-                            iph.dst(),
-                            iph.src(),
-                            ack.header_len() as u16,
-                            64,
-                            Protocol::TCP,
-                        )?;
-
-                        ip.set_header_checksum();
-                        ack.set_checksum(&ip, &[]);
-
-                        self.write(nic, &ip, &ack, &[]).map_err(|err| {
-                            format!("({:?}) failed to write ACK: {err}", self.state)
-                        })?;
+                        self.send_ack(nic, &[])?;
 
                         return Err(format!(
-                            "({:?}) invalid ACK number: {}, these bytes have not yet been sent",
+                            "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
                             self.state, ackn
                         ));
                     } else {
@@ -846,43 +779,23 @@ impl TCB {
                         }
 
                         self.rcv.nxt += seg_len;
+                        // TODO: RCV.WND should be updated with payload.len()
+                        // when buffering data received.
 
                         // Send ACK
                         // ```
                         //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
                         // ```
-                        let mut ack = TcpHeader::new(
-                            tcph.dst_port(),
-                            tcph.src_port(),
-                            self.snd.nxt,
-                            self.rcv.wnd,
-                        );
-
-                        ack.set_ack_number(self.rcv.nxt);
-                        ack.set_ack();
-
-                        let mut ip = Ipv4Header::new(
-                            iph.dst(),
-                            iph.src(),
-                            ack.header_len() as u16,
-                            64,
-                            Protocol::TCP,
-                        )?;
-
-                        ip.set_header_checksum();
-                        ack.set_checksum(&ip, &[]);
-
-                        self.write(nic, &ip, &ack, &[]).map_err(|err| {
-                            format!("({:?}) failed to write ACK: {err}", self.state)
-                        })?;
+                        self.send_ack(nic, &[])?;
                     }
+
+                    break;
                 }
                 _ => {
                     warn!(
                         "connection state {:?} is not currently being handled",
                         self.state
                     );
-
                     break;
                 }
             }
@@ -891,8 +804,132 @@ impl TCB {
         Ok(())
     }
 
+    /// Transmits a TCP SYN packet to initiate a connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP segment could not be written to the TUN
+    /// device.
+    fn send_syn(&self, nic: &mut Tun) -> Result<(), String> {
+        let mut syn = TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.iss, self.rcv.wnd);
+
+        syn.set_syn();
+        syn.set_option_mss(1460)?;
+
+        let mut ip = Ipv4Header::new(
+            self.sock.src.0,
+            self.sock.dst.0,
+            syn.header_len() as u16,
+            64,
+            Protocol::TCP,
+        )?;
+
+        ip.set_header_checksum();
+        syn.set_checksum(&ip, &[]);
+
+        TCB::write(nic, &ip, &syn, &[])
+            .map_err(|err| format!("({:?}) failed to write SYN: {err}", self.state))?;
+
+        Ok(())
+    }
+
+    /// Transmits a TCP SYN_ACK packet in response to a connection request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP segment could not be written to the TUN
+    /// device.
+    fn send_syn_ack(&self, nic: &mut Tun) -> Result<(), String> {
+        let mut syn_ack =
+            TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.iss, self.rcv.wnd);
+
+        // Acknowledge the peer's SYN.
+        syn_ack.set_ack_number(self.rcv.nxt);
+
+        syn_ack.set_syn();
+        syn_ack.set_ack();
+        syn_ack.set_option_mss(1460)?;
+
+        let mut ip = Ipv4Header::new(
+            self.sock.src.0,
+            self.sock.dst.0,
+            syn_ack.header_len() as u16,
+            64,
+            Protocol::TCP,
+        )?;
+
+        ip.set_header_checksum();
+        syn_ack.set_checksum(&ip, &[]);
+
+        TCB::write(nic, &ip, &syn_ack, &[])
+            .map_err(|err| format!("({:?}) failed to write SYN_ACK: {err}", self.state))?;
+
+        Ok(())
+    }
+
+    /// Transmits a TCP ACK packet in response to a peer's TCP segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP segment could not be written to the TUN
+    /// device.
+    fn send_ack(&self, nic: &mut Tun, payload: &[u8]) -> Result<(), String> {
+        let mut ack = TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, self.rcv.wnd);
+
+        ack.set_ack_number(self.rcv.nxt);
+        ack.set_ack();
+
+        let mut ip = Ipv4Header::new(self.sock.src.0, self.sock.dst.0, 0, 64, Protocol::TCP)?;
+
+        ip.set_payload_len((ack.header_len() + payload.len()) as u16)?;
+
+        ip.set_header_checksum();
+        ack.set_checksum(&ip, payload);
+
+        TCB::write(nic, &ip, &ack, payload)
+            .map_err(|err| format!("({:?}) failed to write ACK: {err}", self.state))?;
+
+        Ok(())
+    }
+
+    /// Transmits a TCP RST packet to terminate the current connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP segment could not be written to the TUN
+    /// device.
+    fn send_rst(&self, nic: &mut Tun, seq: u32, ack: u32) -> Result<(), String> {
+        // TODO: update how RST is handled
+
+        let mut rst = TcpHeader::new(self.sock.src.1, self.sock.dst.1, seq, self.rcv.wnd);
+
+        rst.set_ack_number(ack);
+        rst.set_rst();
+
+        let mut ip = Ipv4Header::new(
+            self.sock.src.0,
+            self.sock.dst.0,
+            rst.header_len() as u16,
+            64,
+            Protocol::TCP,
+        )?;
+
+        ip.set_header_checksum();
+        rst.set_checksum(&ip, &[]);
+
+        TCB::write(nic, &ip, &rst, &[])
+            .map_err(|err| format!("({:?}) failed to write RST: {err}", self.state))?;
+
+        Ok(())
+    }
+
+    /// Writes the IP and TCP headers, along with a payload, to the TUN device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP segment could not be written to the TUN
+    /// device.
     fn write(
-        &self,
         nic: &mut Tun,
         ip: &Ipv4Header,
         tcp: &TcpHeader,
@@ -919,7 +956,7 @@ impl TCB {
 #[inline]
 fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     info!(
-        "ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
+        "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
         iph.version(),
         iph.ihl(),
         iph.tos(),
@@ -937,7 +974,7 @@ fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     );
 
     info!(
-        "tcp segment   | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?}",
+        "received tcp segment   | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?}",
         tcph.src_port(),
         tcph.dst_port(),
         tcph.seq_number(),
@@ -956,7 +993,7 @@ fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     );
 
     info!(
-        "read {} bytes of segment payload: {:x?}",
+        "received {} bytes of payload: {:x?}",
         payload.len(),
         payload
     );
