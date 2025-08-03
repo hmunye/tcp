@@ -14,6 +14,8 @@ pub enum Level {
     Warn,
     /// Designates useful information.
     Info,
+    /// Designates lower priority information.
+    Debug,
 }
 
 /// Logs a message at the [Level::Error] level.
@@ -40,9 +42,17 @@ macro_rules! info {
     }};
 }
 
+/// Logs a message at the [Level::Debug] level.
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)+) => {{
+        $crate::log::log($crate::log::Level::Debug, format!($($arg)+));
+    }};
+}
+
 /// Logs a message with the given severity level.
 ///
-/// - Messages with level [Level::Info] are printed to stdout.
+/// - Messages with level [Level::Info] and [Level::Debug] are printed to stdout.
 /// - Messages with level [Level::Warn] and [Level::Error] are printed to stderr.
 ///
 /// # Panics
@@ -100,7 +110,12 @@ pub fn log(level: Level, msg: impl fmt::Display) {
         }
         Level::Info => {
             println!(
-                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[1;97mINFO \x1b[0m: {msg}"
+                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[32mINFO \x1b[0m: {msg}"
+            );
+        }
+        Level::Debug => {
+            println!(
+                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[34mDEBUG \x1b[0m: {msg}"
             );
         }
     }
