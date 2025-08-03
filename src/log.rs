@@ -1,4 +1,4 @@
-//! Minimal logging utility for basic message output with severity levels.
+//! Logging utility for basic message output with severity levels.
 
 use std::ffi::CStr;
 use std::{fmt, io, ptr};

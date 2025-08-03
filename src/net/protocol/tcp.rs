@@ -1,8 +1,6 @@
-//! Minimal implementation of the Transmission Control Protocol (TCP).
-
 use std::io::Write;
 
-use super::{Ipv4Header, Protocol, TcpHeader};
+use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{info, warn};
 
