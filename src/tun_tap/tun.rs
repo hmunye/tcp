@@ -62,6 +62,11 @@ impl Tun {
         Self::create_tun(dev, false)
     }
 
+    /// Returns the raw file descriptor of the TUN virtual network device.
+    pub fn fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+
     /// Returns the assigned name of the TUN virtual network device.
     ///
     /// The name given for creating the TUN device is more of a suggestion
@@ -99,6 +104,34 @@ impl Tun {
     /// formatted with all appropriate headers.
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
         (&self.fd).write(buf)
+    }
+
+    /// Sets the TUN interface to be non-blocking.
+    ///
+    /// # Notes
+    ///
+    /// This function changes the behavior of the [Tun::send] and [Tun::recv]
+    /// methods.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the function failed to set the file descriptor to
+    /// non-blocking.
+    pub fn set_non_blocking(&self) -> io::Result<()> {
+        let fd = self.as_raw_fd();
+
+        // Get current flags so they can be combined with `O_NONBLOCK` instead
+        // of clobbered.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
     }
 
     fn create_tun(dev: &str, with_packet_info: bool) -> io::Result<Self> {

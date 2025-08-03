@@ -5,5 +5,8 @@
 //!
 //! [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
 
+mod event_loop;
 mod tcp;
+
+pub use event_loop::packet_loop;
 pub use tcp::*;
