@@ -228,18 +228,24 @@ impl TCB {
     /// Returns an error if the incoming segment is invalid for connection
     /// requests, if the TCP segment could not be constructed, or if writing to
     /// the TUN device fails.
-    pub fn on_conn_req(nic: &mut Tun, iph: &Ipv4Header, tcph: &TcpHeader) -> Result<Self, String> {
+    pub fn on_conn_req(
+        nic: &mut Tun,
+        iph: &Ipv4Header,
+        tcph: &TcpHeader,
+    ) -> Result<Option<Self>, String> {
         log_packet(iph, tcph, &[]);
 
         // An incoming RST should be ignored.
         if tcph.rst() {
-            return Err("(LISTEN) received RST".into());
+            warn!("(LISTEN) received RST: ignoring");
+            return Ok(None);
         }
 
         // Do not process the FIN if the state is CLOSED, LISTEN or SYN-SENT
         // since the SEG.SEQ cannot be validated; drop the segment and return.
         if tcph.fin() {
-            return Err("(LISTEN) received FIN".into());
+            warn!("(LISTEN) received FIN: ignoring");
+            return Ok(None);
         }
 
         // Initial Send Sequence Number.
@@ -290,22 +296,19 @@ impl TCB {
         // Any acknowledgment is bad if it arrives on a connection still in the
         // LISTEN state.
         if tcph.ack() {
-            // Respond with RST
-            // ```
-            //  <SEQ=SEG.ACK><CTL=RST>
-            // ```
+            warn!("(LISTEN) received ACK: sending RST");
             conn.send_rst(nic, tcph.ack_number(), 0)?;
-
-            return Err("(LISTEN) received ACK: sending RST".into());
+            return Ok(None);
         }
 
         if !tcph.syn() {
-            return Err("(LISTEN) did not receive SYN".into());
+            warn!("(LISTEN) did not receive SYN: ignoring");
+            return Ok(None);
         }
 
         conn.send_syn_ack(nic)?;
 
-        Ok(conn)
+        Ok(Some(conn))
     }
 
     /// Processes an incoming TCP segment for an existing connection.
@@ -372,6 +375,10 @@ impl TCB {
 
         let seqn = tcph.seq_number();
         let ackn = tcph.ack_number();
+        // The number of octets occupied by the data in the segment
+        // (counting SYN and FIN).
+        let seg_len =
+            payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
 
         // RFC 793 (3.3):
         //
@@ -391,12 +398,6 @@ impl TCB {
         //      >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
         //                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
         // ```
-
-        // The number of octets occupied by the data in the segment
-        // (counting SYN and FIN).
-        let seg_len =
-            payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
-
         if !matches!(
             self.state,
             ConnectionState::CLOSED | ConnectionState::LISTEN | ConnectionState::SYN_SENT
@@ -408,39 +409,35 @@ impl TCB {
                     0 => {
                         // Case 1: SEG.SEQ = RCV.NXT
                         if seqn != self.rcv.nxt {
+                            warn!(
+                                "({:?}) invalid SEQ number {}: expected SEQ number: {}",
+                                self.state, seqn, self.rcv.nxt
+                            );
+
                             if !tcph.rst() {
-                                // Respond with ACK
-                                // ```
-                                //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                                // ```
                                 self.send_ack(nic, &[])?;
                             }
 
-                            return Err(format!(
-                                "({:?}) invalid SEQ number {}: expected SEQ number: {}",
-                                self.state, seqn, self.rcv.nxt
-                            ));
+                            return Ok(());
                         }
                     }
                     _ => {
                         // Case 2: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                         if !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd) {
-                            if !tcph.rst() {
-                                // Respond with ACK
-                                // ```
-                                //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                                // ```
-                                self.send_ack(nic, &[])?;
-                            }
-
-                            return Err(format!(
+                            warn!(
                                 "({:?}) invalid SEQ number {}: expected SEQ number between {} and {} (exclusive of {})",
                                 self.state,
                                 seqn,
                                 self.rcv.nxt.wrapping_sub(1),
                                 nxt_wnd,
                                 nxt_wnd
-                            ));
+                            );
+
+                            if !tcph.rst() {
+                                self.send_ack(nic, &[])?;
+                            }
+
+                            return Ok(());
                         }
                     }
                 },
@@ -448,18 +445,16 @@ impl TCB {
                     0 => {
                         // Case 3: not acceptable (we have received bytes when
                         // we are advertising a window size of 0).
+                        warn!(
+                            "({:?}) received {len} bytes of data from peer with current receive window size: 0",
+                            self.state
+                        );
+
                         if !tcph.rst() {
-                            // Respond with ACK
-                            // ```
-                            //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                            // ```
                             self.send_ack(nic, &[])?;
                         }
 
-                        return Err(format!(
-                            "({:?}) received {len} bytes of data from peer with current receive window size: 0",
-                            self.state
-                        ));
+                        return Ok(());
                     }
                     _ => {
                         // Case 4: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
@@ -471,22 +466,20 @@ impl TCB {
                                 nxt_wnd,
                             )
                         {
-                            if !tcph.rst() {
-                                // Respond with ACK
-                                // ```
-                                //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-                                // ```
-                                self.send_ack(nic, &[])?;
-                            }
-
-                            return Err(format!(
+                            warn!(
                                 "({:?}) invalid SEQ number {}: expected first or last SEQ number occupied by the segment between {} and {} (exclusive of {})",
                                 self.state,
                                 seqn,
                                 self.rcv.nxt.wrapping_sub(1),
                                 nxt_wnd,
                                 nxt_wnd
-                            ));
+                            );
+
+                            if !tcph.rst() {
+                                self.send_ack(nic, &[])?;
+                            }
+
+                            return Ok(());
                         }
                     }
                 },
@@ -500,17 +493,14 @@ impl TCB {
                     // SYN-SENT since the SEG.SEQ cannot be validated; drop the
                     // segment and return.
                     if tcph.fin() {
-                        return Err(format!("({:?}) received FIN", self.state));
+                        warn!("({:?}) received FIN: ignoring", self.state);
+                        break;
                     }
 
                     let mut validate_ack = || {
                         // Peer did not correctly ACK our SYN.
                         if ackn <= self.snd.iss || ackn > self.snd.nxt {
                             if !tcph.rst() {
-                                // Respond with RST
-                                // ```
-                                //  <SEQ=SEG.ACK><CTL=RST>
-                                // ```
                                 self.send_rst(nic, ackn, 0)?;
 
                                 // TODO: Probably should delete TCB and inform
@@ -540,6 +530,8 @@ impl TCB {
                         }
 
                         if tcph.rst() {
+                            info!("({:?}) transitioning to CLOSED", self.state);
+
                             // TODO: drop the segment, enter CLOSED state, and
                             // delete TCB.
                             self.state = ConnectionState::CLOSED;
@@ -557,7 +549,10 @@ impl TCB {
                         (true, true) => {
                             // Case 1: SYN and ACK received
                             // (send ACK -> ESTABLISHED).
-                            validate_ack()?;
+                            if let Err(err) = validate_ack() {
+                                warn!("{err}");
+                                break;
+                            }
 
                             // Previously unknown values can now be updated.
                             self.rcv.nxt = seqn + 1;
@@ -567,9 +562,11 @@ impl TCB {
                             self.peer_mss = tcph.options().mss().unwrap_or(DEFAULT_MSS);
 
                             self.snd.una = ackn;
+
+                            info!("({:?}) transitioning to ESTABLISHED", self.state);
                             self.state = ConnectionState::ESTABLISHED;
 
-                            // Send payload with ACK.
+                            // Send piggybacked payload with ACK.
                             let payload = b"hello, world";
 
                             // Send ACK
@@ -592,6 +589,7 @@ impl TCB {
                             self.snd.wnd = tcph.window();
                             self.peer_mss = tcph.options().mss().unwrap_or(DEFAULT_MSS);
 
+                            info!("({:?}) transitioning to SYN_RECEIVED", self.state);
                             self.state = ConnectionState::SYN_RECEIVED;
 
                             // Since we are sending a SYN.
@@ -610,15 +608,17 @@ impl TCB {
                             // If the ACK number received is valid, we continue
                             // to wait in the SYN_SENT state for a valid SYN or
                             // SYN_ACK segment.
-                            validate_ack()?;
+                            if let Err(err) = validate_ack() {
+                                warn!("{err}");
+                            }
                         }
                         (false, false) => {
                             // Case 4: Neither SYN or ACK received
                             // (drop segment).
-                            return Err(format!(
-                                "({:?}) received neither a SYN or ACK to establish connection",
+                            warn!(
+                                "({:?}) received neither a SYN or ACK to establish connection: ignoring",
                                 self.state
-                            ));
+                            );
                         }
                     }
 
@@ -629,53 +629,31 @@ impl TCB {
                         // TODO: delete the TCB in either case.
                         match self.open_kind {
                             OpenKind::PASSIVE_OPEN => {
-                                self.state = ConnectionState::LISTEN;
-
-                                return Err(format!(
-                                    "({:?}) received RST starting from {:?} state",
+                                warn!(
+                                    "({:?}) received RST starting from {:?} state: connection reset",
                                     self.state, self.open_kind
-                                ));
+                                );
+
+                                info!("({:?}) transitioning to LISTEN", self.state);
+                                self.state = ConnectionState::LISTEN;
+                                break;
                             }
                             OpenKind::ACTIVE_OPEN => {
-                                self.state = ConnectionState::CLOSED;
-
-                                return Err(format!(
+                                warn!(
                                     "({:?}) received RST starting from {:?} state: connection refused",
                                     self.state, self.open_kind
-                                ));
+                                );
+
+                                info!("({:?}) transitioning to CLOSED", self.state);
+                                self.state = ConnectionState::CLOSED;
+                                break;
                             }
                         }
                     }
 
-                    if tcph.syn() {
-                        // TODO: Enter the CLOSED state and delete the TCB
-                        self.state = ConnectionState::CLOSED;
-
-                        // Respond with RST
-                        // ```
-                        //  <SEQ=SEG.ACK><CTL=RST>
-                        // ```
-                        self.send_rst(nic, ackn, 0)?;
-
-                        return Err(format!("({:?}) received SYN: connection reset", self.state));
-                    }
-
-                    // Peer wants to terminate connection gracefully.
-                    if tcph.fin() {
-                        self.state = ConnectionState::CLOSE_WAIT;
-                        // To account for the FIN.
-                        self.rcv.nxt += 1;
-
-                        self.send_ack(nic, &[])?;
-
-                        return Err(format!(
-                            "({:?}) received FIN: connection closing",
-                            self.state
-                        ));
-                    }
-
                     if !tcph.ack() {
-                        return Err(format!("({:?}) did not receive ACK", self.state));
+                        warn!("({:?}) did not receive ACK", self.state);
+                        break;
                     }
 
                     // If SND.UNA =< SEG.ACK =< SND.NXT then the ACK is
@@ -685,73 +663,71 @@ impl TCB {
                         ackn,
                         self.snd.nxt.wrapping_add(1),
                     ) {
-                        // Respond with RST
-                        // ```
-                        //  <SEQ=SEG.ACK><CTL=RST>
-                        // ```
-                        self.send_rst(nic, ackn, 0)?;
-
-                        return Err(format!(
+                        warn!(
                             "({:?}) unacceptable ACK number {}: expected ACK number between {} and {} (inclusive of both)",
                             self.state,
                             ackn,
                             self.snd.una.wrapping_sub(1),
                             self.snd.nxt.wrapping_add(1),
-                        ));
+                        );
+
+                        self.send_rst(nic, ackn, 0)?;
+                        break;
                     }
 
+                    info!("({:?}) transitioning to ESTABLISHED", self.state);
                     self.state = ConnectionState::ESTABLISHED;
                 }
                 ConnectionState::ESTABLISHED => {
                     if tcph.rst() {
                         // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
-                        return Err(format!("({:?}) received RST: connection reset", self.state));
+                        break;
                     }
 
                     if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
-                        // Respond with RST
-                        // ```
-                        //  <SEQ=SEG.ACK><CTL=RST>
-                        // ```
-                        self.send_rst(nic, ackn, 0)?;
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
 
-                        return Err(format!("({:?}) received SYN: connection reset", self.state));
-                    }
-
-                    // Peer wants to terminate connection gracefully.
-                    if tcph.fin() {
-                        self.state = ConnectionState::CLOSE_WAIT;
-                        // To account for the FIN.
-                        self.rcv.nxt += 1;
-
-                        self.send_ack(nic, &[])?;
-
-                        return Err(format!(
-                            "({:?}) received FIN: connection closing",
-                            self.state
-                        ));
+                        break;
                     }
 
                     if !tcph.ack() {
-                        return Err(format!("({:?}) did not receive ACK", self.state));
+                        warn!("({:?}) did not receive ACK: ignoring", self.state);
+                        break;
                     }
 
                     if ackn < self.snd.una {
-                        return Err(format!(
-                            "({:?}) received duplicate ACK number: {}",
-                            self.state, ackn
-                        ));
+                        warn!("({:?}) received duplicate ACK number: {}", self.state, ackn);
+                        break;
                     } else if ackn > self.snd.nxt {
-                        self.send_ack(nic, &[])?;
-
-                        return Err(format!(
+                        warn!(
                             "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
                             self.state, ackn
-                        ));
+                        );
+
+                        self.send_ack(nic, &[])?;
+
+                        break;
                     } else {
                         // If SND.UNA < SEG.ACK =< SND.NXT then, set
                         // SND.UNA <- SEG.ACK
@@ -787,13 +763,516 @@ impl TCB {
                         //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
                         // ```
                         self.send_ack(nic, &[])?;
+
+                        if tcph.fin() {
+                            warn!("({:?}) received FIN: connection closing", self.state);
+
+                            info!("({:?}) transitioning to CLOSE_WAIT", self.state);
+                            self.state = ConnectionState::CLOSE_WAIT;
+
+                            continue;
+                        }
                     }
 
                     break;
                 }
+                ConnectionState::FIN_WAIT_1 => {
+                    if tcph.rst() {
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        self.state = ConnectionState::CLOSED;
+
+                        break;
+                    }
+
+                    if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        self.state = ConnectionState::CLOSED;
+
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
+
+                        break;
+                    }
+
+                    if !tcph.ack() {
+                        // Simultaneous graceful terminations.
+                        if tcph.fin() {
+                            warn!("({:?}) received FIN", self.state);
+
+                            info!("({:?}) transitioning to CLOSING", self.state);
+                            self.state = ConnectionState::CLOSING;
+                            // FIN takes up a byte in the sequence space.
+                            self.rcv.nxt += 1;
+
+                            self.send_ack(nic, &[])?;
+                        } else {
+                            warn!("({:?}) did not receive ACK: ignoring", self.state);
+                        }
+
+                        break;
+                    }
+
+                    if ackn < self.snd.una {
+                        warn!("({:?}) received duplicate ACK number: {}", self.state, ackn);
+                        break;
+                    } else if ackn > self.snd.nxt {
+                        warn!(
+                            "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
+                            self.state, ackn
+                        );
+
+                        self.send_ack(nic, &[])?;
+
+                        break;
+                    } else {
+                        // If SND.UNA < SEG.ACK =< SND.NXT then, set
+                        // SND.UNA <- SEG.ACK
+                        //
+                        // If SND.UNA < SEG.ACK =< SND.NXT, the send window
+                        // should be updated. If (SND.WL1 < SEG.SEQ or (SND.WL1
+                        // = SEG.SEQ and SND.WL2 =< SEG.ACK)), set
+                        // SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set
+                        // SND.WL2 <- SEG.ACK.
+                        if is_between_wrapped(self.snd.una, ackn, self.snd.nxt.wrapping_add(1)) {
+                            self.snd.una = ackn;
+
+                            if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn)
+                            {
+                                self.snd.wnd = tcph.window();
+                                self.snd.wl1 = seqn;
+                                self.snd.wl2 = ackn;
+                            }
+                        }
+                    }
+
+                    if tcph.fin() {
+                        // Our FIN was ACKed and we received a FIN.
+                        info!("({:?}) transitioning to TIME_WAIT", self.state);
+                        self.state = ConnectionState::TIME_WAIT;
+                    } else {
+                        // Our FIN was ACKed.
+                        info!("({:?}) transitioning to FIN_WAIT_2", self.state);
+                        self.state = ConnectionState::FIN_WAIT_2;
+                    }
+
+                    if seg_len > 0 {
+                        if let Ok(str) = std::str::from_utf8(payload) {
+                            info!("({:?}) payload received from peer: {}", self.state, str)
+                        }
+
+                        self.rcv.nxt += seg_len;
+                        // TODO: RCV.WND should be updated with payload.len()
+                        // when buffering data received.
+
+                        // Send ACK
+                        // ```
+                        //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                        // ```
+                        self.send_ack(nic, &[])?;
+                    }
+
+                    break;
+                }
+                ConnectionState::FIN_WAIT_2 => {
+                    if tcph.rst() {
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        self.state = ConnectionState::CLOSED;
+
+                        break;
+                    }
+
+                    if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        self.state = ConnectionState::CLOSED;
+
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
+
+                        break;
+                    }
+
+                    if !tcph.ack() {
+                        warn!("({:?}) did not receive ACK: ignoring", self.state);
+                        break;
+                    }
+
+                    if ackn < self.snd.una {
+                        warn!("({:?}) received duplicate ACK number: {}", self.state, ackn);
+                        break;
+                    } else if ackn > self.snd.nxt {
+                        warn!(
+                            "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
+                            self.state, ackn
+                        );
+
+                        self.send_ack(nic, &[])?;
+
+                        break;
+                    } else {
+                        // If SND.UNA < SEG.ACK =< SND.NXT then, set
+                        // SND.UNA <- SEG.ACK
+                        //
+                        // If SND.UNA < SEG.ACK =< SND.NXT, the send window
+                        // should be updated. If (SND.WL1 < SEG.SEQ or (SND.WL1
+                        // = SEG.SEQ and SND.WL2 =< SEG.ACK)), set
+                        // SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set
+                        // SND.WL2 <- SEG.ACK.
+                        if is_between_wrapped(self.snd.una, ackn, self.snd.nxt.wrapping_add(1)) {
+                            self.snd.una = ackn;
+
+                            if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn)
+                            {
+                                self.snd.wnd = tcph.window();
+                                self.snd.wl1 = seqn;
+                                self.snd.wl2 = ackn;
+                            }
+                        }
+                    }
+
+                    if tcph.fin() {
+                        // We received a FIN.
+                        info!("({:?}) transitioning to TIME_WAIT", self.state);
+                        self.state = ConnectionState::TIME_WAIT;
+                    }
+
+                    if seg_len > 0 {
+                        if let Ok(str) = std::str::from_utf8(payload) {
+                            info!("({:?}) payload received from peer: {}", self.state, str)
+                        }
+
+                        self.rcv.nxt += seg_len;
+                        // TODO: RCV.WND should be updated with payload.len()
+                        // when buffering data received.
+
+                        // Send ACK
+                        // ```
+                        //  <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
+                        // ```
+                        self.send_ack(nic, &[])?;
+                    }
+
+                    break;
+                }
+                ConnectionState::CLOSE_WAIT => {
+                    if tcph.rst() {
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        self.state = ConnectionState::CLOSED;
+
+                        break;
+                    }
+
+                    if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        self.state = ConnectionState::CLOSED;
+
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
+
+                        break;
+                    }
+
+                    if !tcph.ack() {
+                        warn!("({:?}) did not receive ACK: ignoring", self.state);
+                        break;
+                    }
+
+                    if ackn < self.snd.una {
+                        warn!("({:?}) received duplicate ACK number: {}", self.state, ackn);
+                        break;
+                    } else if ackn > self.snd.nxt {
+                        warn!(
+                            "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
+                            self.state, ackn
+                        );
+
+                        self.send_ack(nic, &[])?;
+
+                        break;
+                    } else {
+                        // If SND.UNA < SEG.ACK =< SND.NXT then, set
+                        // SND.UNA <- SEG.ACK
+                        //
+                        // If SND.UNA < SEG.ACK =< SND.NXT, the send window
+                        // should be updated. If (SND.WL1 < SEG.SEQ or (SND.WL1
+                        // = SEG.SEQ and SND.WL2 =< SEG.ACK)), set
+                        // SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set
+                        // SND.WL2 <- SEG.ACK.
+                        if is_between_wrapped(self.snd.una, ackn, self.snd.nxt.wrapping_add(1)) {
+                            self.snd.una = ackn;
+
+                            if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn)
+                            {
+                                self.snd.wnd = tcph.window();
+                                self.snd.wl1 = seqn;
+                                self.snd.wl2 = ackn;
+                            }
+                        }
+                    }
+
+                    // TODO: For now the FIN is immediately sent in response but
+                    // it should instead be triggered by user code. The peer
+                    // indicated they are done sending data, but the user can
+                    // continue to send data.
+                    info!("({:?}) transitioning to LAST_ACK", self.state);
+                    self.state = ConnectionState::LAST_ACK;
+
+                    self.send_fin_ack(nic, &[])?;
+
+                    // Since we are sending a FIN.
+                    self.snd.nxt += 1;
+
+                    break;
+                }
+                ConnectionState::CLOSING => {
+                    if tcph.rst() {
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        self.state = ConnectionState::CLOSED;
+
+                        break;
+                    }
+
+                    if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        self.state = ConnectionState::CLOSED;
+
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
+
+                        break;
+                    }
+
+                    if !tcph.ack() {
+                        warn!("({:?}) did not receive ACK: ignoring", self.state);
+                        break;
+                    }
+
+                    if ackn < self.snd.una {
+                        warn!("({:?}) received duplicate ACK number: {}", self.state, ackn);
+                        break;
+                    } else if ackn > self.snd.nxt {
+                        warn!(
+                            "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
+                            self.state, ackn
+                        );
+
+                        self.send_ack(nic, &[])?;
+
+                        break;
+                    } else {
+                        // If SND.UNA < SEG.ACK =< SND.NXT then, set
+                        // SND.UNA <- SEG.ACK
+                        //
+                        // If SND.UNA < SEG.ACK =< SND.NXT, the send window
+                        // should be updated. If (SND.WL1 < SEG.SEQ or (SND.WL1
+                        // = SEG.SEQ and SND.WL2 =< SEG.ACK)), set
+                        // SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set
+                        // SND.WL2 <- SEG.ACK.
+                        if is_between_wrapped(self.snd.una, ackn, self.snd.nxt.wrapping_add(1)) {
+                            self.snd.una = ackn;
+
+                            if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn)
+                            {
+                                self.snd.wnd = tcph.window();
+                                self.snd.wl1 = seqn;
+                                self.snd.wl2 = ackn;
+                            }
+                        }
+                    }
+
+                    // We have received a FIN at this point, meaning the peer
+                    // indicated it is no longer sending data, so immediately
+                    // transition states.
+                    info!("({:?}) transitioning to TIME_WAIT", self.state);
+                    self.state = ConnectionState::TIME_WAIT;
+
+                    break;
+                }
+                ConnectionState::LAST_ACK => {
+                    if tcph.rst() {
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        self.state = ConnectionState::CLOSED;
+
+                        break;
+                    }
+
+                    if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        self.state = ConnectionState::CLOSED;
+
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
+
+                        break;
+                    }
+
+                    if !tcph.ack() {
+                        warn!("({:?}) did not receive ACK: ignoring", self.state);
+                        break;
+                    }
+
+                    if ackn < self.snd.una {
+                        warn!("({:?}) received duplicate ACK number: {}", self.state, ackn);
+                        break;
+                    } else if ackn > self.snd.nxt {
+                        warn!(
+                            "({:?}) invalid ACK number: {}, these sequence number have not yet been transmitted",
+                            self.state, ackn
+                        );
+
+                        self.send_ack(nic, &[])?;
+
+                        break;
+                    } else {
+                        // If SND.UNA < SEG.ACK =< SND.NXT then, set
+                        // SND.UNA <- SEG.ACK
+                        //
+                        // If SND.UNA < SEG.ACK =< SND.NXT, the send window
+                        // should be updated. If (SND.WL1 < SEG.SEQ or (SND.WL1
+                        // = SEG.SEQ and SND.WL2 =< SEG.ACK)), set
+                        // SND.WND <- SEG.WND, set SND.WL1 <- SEG.SEQ, and set
+                        // SND.WL2 <- SEG.ACK.
+                        if is_between_wrapped(self.snd.una, ackn, self.snd.nxt.wrapping_add(1)) {
+                            self.snd.una = ackn;
+
+                            if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn)
+                            {
+                                self.snd.wnd = tcph.window();
+                                self.snd.wl1 = seqn;
+                                self.snd.wl2 = ackn;
+                            }
+                        }
+                    }
+
+                    // TODO: Connection finally closed. Delete TCB.
+                    info!("({:?}) transitioning to CLOSED", self.state);
+                    self.state = ConnectionState::CLOSED;
+
+                    break;
+                }
+                ConnectionState::TIME_WAIT => {
+                    if tcph.rst() {
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        warn!("({:?}) received RST: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        self.state = ConnectionState::CLOSED;
+
+                        break;
+                    }
+
+                    if tcph.syn() {
+                        warn!("({:?}) received SYN: connection reset", self.state);
+
+                        info!("({:?}) transitioning to CLOSED", self.state);
+                        // TODO: Enter the CLOSED state and delete the TCB
+                        self.state = ConnectionState::CLOSED;
+
+                        // Shouldn't receive a SYN_ACK in this state, but still
+                        // checking...
+                        if tcph.ack() {
+                            // Respond with RST
+                            // ```
+                            //  <SEQ=SEG.ACK><CTL=RST>
+                            // ```
+                            self.send_rst(nic, ackn, 0)?;
+                        } else {
+                            // Reset the connection while acknowledging the SYN.
+                            self.send_rst(nic, 0, seg_len)?;
+                        }
+
+                        break;
+                    }
+
+                    // The only thing that can arrive in this state is a
+                    // retransmission of the remote FIN.  Acknowledge it, and
+                    // restart the 2 MSL timeout.
+                    if tcph.fin() {
+                        self.send_ack(nic, &[])?;
+                    }
+                }
                 _ => {
                     warn!(
-                        "connection state {:?} is not currently being handled",
+                        "connection state ({:?}) is not currently being handled",
                         self.state
                     );
                     break;
@@ -892,6 +1371,33 @@ impl TCB {
         Ok(())
     }
 
+    /// Transmits a TCP FIN_ACK packet for graceful connection termination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TCP segment could not be written to the TUN
+    /// device.
+    fn send_fin_ack(&self, nic: &mut Tun, payload: &[u8]) -> Result<(), String> {
+        let mut fin_ack =
+            TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, self.rcv.wnd);
+
+        fin_ack.set_ack_number(self.rcv.nxt);
+        fin_ack.set_fin();
+        fin_ack.set_ack();
+
+        let mut ip = Ipv4Header::new(self.sock.src.0, self.sock.dst.0, 0, 64, Protocol::TCP)?;
+
+        ip.set_payload_len((fin_ack.header_len() + payload.len()) as u16)?;
+
+        ip.set_header_checksum();
+        fin_ack.set_checksum(&ip, payload);
+
+        TCB::write(nic, &ip, &fin_ack, payload)
+            .map_err(|err| format!("({:?}) failed to write ACK: {err}", self.state))?;
+
+        Ok(())
+    }
+
     /// Transmits a TCP RST packet to terminate the current connection.
     ///
     /// # Errors
@@ -899,12 +1405,14 @@ impl TCB {
     /// Returns an error if the TCP segment could not be written to the TUN
     /// device.
     fn send_rst(&self, nic: &mut Tun, seq: u32, ack: u32) -> Result<(), String> {
-        // TODO: update how RST is handled
-
         let mut rst = TcpHeader::new(self.sock.src.1, self.sock.dst.1, seq, self.rcv.wnd);
 
         rst.set_ack_number(ack);
         rst.set_rst();
+
+        if ack != 0 {
+            rst.set_ack();
+        }
 
         let mut ip = Ipv4Header::new(
             self.sock.src.0,

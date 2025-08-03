@@ -80,8 +80,10 @@ fn listen_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB>) -
 
                         match connections.entry(socket) {
                             Entry::Vacant(entry) => match TCB::on_conn_req(nic, &iph, &tcph) {
-                                Ok(conn) => {
-                                    entry.insert(conn);
+                                Ok(opt) => {
+                                    if let Some(conn) = opt {
+                                        entry.insert(conn);
+                                    }
                                 }
                                 Err(err) => {
                                     error!("failed to process incoming TCP segment: {err}");
