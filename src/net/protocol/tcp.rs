@@ -1,8 +1,10 @@
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
-use crate::{info, warn};
+use crate::{debug, warn};
 
 /// RFC 1122 (4.2.2.6):
 ///
@@ -34,6 +36,11 @@ pub struct TCB {
     snd: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
     rcv: RecvSeqSpace,
+    /// Receive buffer storing data from peer.
+    ///
+    /// Using a BTreeMap so out of order segments can be retrieved in-order by
+    /// sequence number.
+    recv_buf: BTreeMap<u32, Vec<u8>>,
     /// Maximum Segment Size (MSS) of peer.
     #[allow(dead_code)]
     peer_mss: u16,
@@ -207,6 +214,7 @@ impl TCB {
                 // updated when peer responds.
                 irs: 0,
             },
+            recv_buf: Default::default(),
             // Peer's MSS value that may have been received. Will be updated
             // when peer responds.
             peer_mss: 0,
@@ -215,7 +223,7 @@ impl TCB {
 
         conn.send_syn(nic)?;
 
-        info!("(ACTIVE_OPEN) transitioning to SYN_SENT");
+        debug!("(ACTIVE_OPEN) transitioning to SYN_SENT");
 
         Ok(conn)
     }
@@ -288,6 +296,7 @@ impl TCB {
                 // What sequence number the peer chooses to start from.
                 irs: tcph.seq_number(),
             },
+            recv_buf: Default::default(),
             // Peer's MSS value that may have been received.
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
             open_kind: OpenKind::PASSIVE_OPEN,
@@ -308,7 +317,7 @@ impl TCB {
 
         conn.send_syn_ack(nic)?;
 
-        info!("(LISTEN) transitioning to SYN_RECEIVED");
+        debug!("(LISTEN) transitioning to SYN_RECEIVED");
 
         Ok(Some(conn))
     }
@@ -366,17 +375,18 @@ impl TCB {
     pub fn on_packet(
         &mut self,
         nic: &mut Tun,
-        _iph: &Ipv4Header,
+        iph: &Ipv4Header,
         tcph: &TcpHeader,
         payload: &[u8],
     ) -> Result<(), String> {
-        // log_packet(iph, tcph, payload);
+        log_packet(iph, tcph, payload);
 
         // TODO: If the RCV.WND is zero, no segments will be acceptable, but
         // special allowance should be made to accept valid ACKs, URGs and RSTs.
 
         let seqn = tcph.seq_number();
         let ackn = tcph.ack_number();
+
         // The number of octets occupied by the data in the segment
         // (counting SYN and FIN).
         let seg_len =
@@ -532,7 +542,7 @@ impl TCB {
                         }
 
                         if tcph.rst() {
-                            info!("({:?}) transitioning to CLOSED", self.state);
+                            debug!("({:?}) transitioning to CLOSED", self.state);
 
                             // TODO: drop the segment, enter CLOSED state, and
                             // delete TCB.
@@ -565,7 +575,7 @@ impl TCB {
 
                             self.snd.una = ackn;
 
-                            info!("({:?}) transitioning to ESTABLISHED", self.state);
+                            debug!("({:?}) transitioning to ESTABLISHED", self.state);
                             self.state = ConnectionState::ESTABLISHED;
 
                             // Send piggybacked payload with ACK.
@@ -591,7 +601,7 @@ impl TCB {
                             self.snd.wnd = tcph.window();
                             self.peer_mss = tcph.options().mss().unwrap_or(DEFAULT_MSS);
 
-                            info!("({:?}) transitioning to SYN_RECEIVED", self.state);
+                            debug!("({:?}) transitioning to SYN_RECEIVED", self.state);
                             self.state = ConnectionState::SYN_RECEIVED;
 
                             // Since we are sending a SYN.
@@ -636,7 +646,7 @@ impl TCB {
                                     self.state, self.open_kind
                                 );
 
-                                info!("({:?}) transitioning to LISTEN", self.state);
+                                debug!("({:?}) transitioning to LISTEN", self.state);
                                 self.state = ConnectionState::LISTEN;
                                 break;
                             }
@@ -646,7 +656,7 @@ impl TCB {
                                     self.state, self.open_kind
                                 );
 
-                                info!("({:?}) transitioning to CLOSED", self.state);
+                                debug!("({:?}) transitioning to CLOSED", self.state);
                                 self.state = ConnectionState::CLOSED;
                                 break;
                             }
@@ -677,7 +687,7 @@ impl TCB {
                         break;
                     }
 
-                    info!("({:?}) transitioning to ESTABLISHED", self.state);
+                    debug!("({:?}) transitioning to ESTABLISHED", self.state);
                     self.state = ConnectionState::ESTABLISHED;
                 }
                 ConnectionState::ESTABLISHED => {
@@ -685,7 +695,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
                         break;
                     }
@@ -693,7 +703,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -752,13 +762,40 @@ impl TCB {
                     }
 
                     if seg_len > 0 {
-                        if let Ok(str) = std::str::from_utf8(payload) {
-                            info!("({:?}) payload received from peer: {}", self.state, str)
+                        if !payload.is_empty() {
+                            match seqn.cmp(&self.rcv.nxt) {
+                                // We received the data we were expecting.
+                                Ordering::Equal => {
+                                    self.recv_buf.insert(seqn, payload.into());
+
+                                    self.rcv.wnd -= payload.len() as u16;
+                                    self.rcv.nxt += payload.len() as u32;
+                                }
+                                // Received data we were not expecting yet.
+                                // Buffer but keep RCV.NXT the same.
+                                Ordering::Greater => {
+                                    self.recv_buf.insert(seqn, payload.into());
+
+                                    self.rcv.wnd -= payload.len() as u16;
+                                }
+                                // Part of the segment overlaps data we have
+                                // already received
+                                Ordering::Less => {
+                                    // The entire payload is old/duplicate data.
+                                    if payload.len() <= (self.rcv.nxt - seqn) as usize {
+                                    } else {
+                                        let payload = &payload[(self.rcv.nxt - seqn) as usize..];
+
+                                        // Keyed by RCV.NXT instead of SEG.SEQ.
+                                        self.recv_buf.insert(self.rcv.nxt, payload.into());
+
+                                        self.rcv.wnd -= payload.len() as u16;
+                                    }
+                                }
+                            }
                         }
 
-                        self.rcv.nxt += seg_len;
-                        // TODO: RCV.WND should be updated with payload.len()
-                        // when buffering data received.
+                        self.rcv.nxt += if tcph.fin() { 1 } else { 0 };
 
                         // Send ACK
                         // ```
@@ -766,10 +803,13 @@ impl TCB {
                         // ```
                         self.send_ack(nic, &[])?;
 
+                        debug!("({:?}) RCV.NXT: {}", self.state, self.rcv.nxt);
+                        debug!("({:?}) SND.NXT: {}", self.state, self.snd.nxt);
+
                         if tcph.fin() {
                             warn!("({:?}) received FIN: connection closing", self.state);
 
-                            info!("({:?}) transitioning to CLOSE_WAIT", self.state);
+                            debug!("({:?}) transitioning to CLOSE_WAIT", self.state);
                             self.state = ConnectionState::CLOSE_WAIT;
 
                             continue;
@@ -783,7 +823,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
 
                         break;
@@ -792,7 +832,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -817,7 +857,7 @@ impl TCB {
                         if tcph.fin() {
                             warn!("({:?}) received FIN", self.state);
 
-                            info!("({:?}) transitioning to CLOSING", self.state);
+                            debug!("({:?}) transitioning to CLOSING", self.state);
                             self.state = ConnectionState::CLOSING;
                             // FIN takes up a byte in the sequence space.
                             self.rcv.nxt += 1;
@@ -865,22 +905,49 @@ impl TCB {
 
                     if tcph.fin() {
                         // Our FIN was ACKed and we received a FIN.
-                        info!("({:?}) transitioning to TIME_WAIT", self.state);
+                        debug!("({:?}) transitioning to TIME_WAIT", self.state);
+
+                        self.rcv.nxt += 1;
                         self.state = ConnectionState::TIME_WAIT;
                     } else {
                         // Our FIN was ACKed.
-                        info!("({:?}) transitioning to FIN_WAIT_2", self.state);
+                        debug!("({:?}) transitioning to FIN_WAIT_2", self.state);
                         self.state = ConnectionState::FIN_WAIT_2;
                     }
 
                     if seg_len > 0 {
-                        if let Ok(str) = std::str::from_utf8(payload) {
-                            info!("({:?}) payload received from peer: {}", self.state, str)
-                        }
+                        if !payload.is_empty() {
+                            match seqn.cmp(&self.rcv.nxt) {
+                                // We received the data we were expecting.
+                                Ordering::Equal => {
+                                    self.recv_buf.insert(seqn, payload.into());
 
-                        self.rcv.nxt += seg_len;
-                        // TODO: RCV.WND should be updated with payload.len()
-                        // when buffering data received.
+                                    self.rcv.wnd -= payload.len() as u16;
+                                    self.rcv.nxt += payload.len() as u32;
+                                }
+                                // Received data we were not expecting yet.
+                                // Buffer but keep RCV.NXT the same.
+                                Ordering::Greater => {
+                                    self.recv_buf.insert(seqn, payload.into());
+
+                                    self.rcv.wnd -= payload.len() as u16;
+                                }
+                                // Part of the segment overlaps data we have
+                                // already received
+                                Ordering::Less => {
+                                    // The entire payload is old/duplicate data.
+                                    if payload.len() <= (self.rcv.nxt - seqn) as usize {
+                                    } else {
+                                        let payload = &payload[(self.rcv.nxt - seqn) as usize..];
+
+                                        // Keyed by RCV.NXT instead of SEG.SEQ.
+                                        self.recv_buf.insert(self.rcv.nxt, payload.into());
+
+                                        self.rcv.wnd -= payload.len() as u16;
+                                    }
+                                }
+                            }
+                        }
 
                         // Send ACK
                         // ```
@@ -896,7 +963,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
 
                         break;
@@ -905,7 +972,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -965,18 +1032,45 @@ impl TCB {
 
                     if tcph.fin() {
                         // We received a FIN.
-                        info!("({:?}) transitioning to TIME_WAIT", self.state);
+                        debug!("({:?}) transitioning to TIME_WAIT", self.state);
+
+                        self.rcv.nxt += 1;
                         self.state = ConnectionState::TIME_WAIT;
                     }
 
                     if seg_len > 0 {
-                        if let Ok(str) = std::str::from_utf8(payload) {
-                            info!("({:?}) payload received from peer: {}", self.state, str)
-                        }
+                        if !payload.is_empty() {
+                            match seqn.cmp(&self.rcv.nxt) {
+                                // We received the data we were expecting.
+                                Ordering::Equal => {
+                                    self.recv_buf.insert(seqn, payload.into());
 
-                        self.rcv.nxt += seg_len;
-                        // TODO: RCV.WND should be updated with payload.len()
-                        // when buffering data received.
+                                    self.rcv.wnd -= payload.len() as u16;
+                                    self.rcv.nxt += payload.len() as u32;
+                                }
+                                // Received data we were not expecting yet.
+                                // Buffer but keep RCV.NXT the same.
+                                Ordering::Greater => {
+                                    self.recv_buf.insert(seqn, payload.into());
+
+                                    self.rcv.wnd -= payload.len() as u16;
+                                }
+                                // Part of the segment overlaps data we have
+                                // already received
+                                Ordering::Less => {
+                                    // The entire payload is old/duplicate data.
+                                    if payload.len() <= (self.rcv.nxt - seqn) as usize {
+                                    } else {
+                                        let payload = &payload[(self.rcv.nxt - seqn) as usize..];
+
+                                        // Keyed by RCV.NXT instead of SEG.SEQ.
+                                        self.recv_buf.insert(self.rcv.nxt, payload.into());
+
+                                        self.rcv.wnd -= payload.len() as u16;
+                                    }
+                                }
+                            }
+                        }
 
                         // Send ACK
                         // ```
@@ -992,7 +1086,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
 
                         break;
@@ -1001,7 +1095,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -1063,7 +1157,7 @@ impl TCB {
                     // it should instead be triggered by user code. The peer
                     // indicated they are done sending data, but the user can
                     // continue to send data.
-                    info!("({:?}) transitioning to LAST_ACK", self.state);
+                    debug!("({:?}) transitioning to LAST_ACK", self.state);
                     self.state = ConnectionState::LAST_ACK;
 
                     self.send_fin_ack(nic, &[])?;
@@ -1078,7 +1172,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
 
                         break;
@@ -1087,7 +1181,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -1148,7 +1242,7 @@ impl TCB {
                     // We have received a FIN at this point, meaning the peer
                     // indicated it is no longer sending data, so immediately
                     // transition states.
-                    info!("({:?}) transitioning to TIME_WAIT", self.state);
+                    debug!("({:?}) transitioning to TIME_WAIT", self.state);
                     self.state = ConnectionState::TIME_WAIT;
 
                     break;
@@ -1158,7 +1252,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
 
                         break;
@@ -1167,7 +1261,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -1226,7 +1320,7 @@ impl TCB {
                     }
 
                     // TODO: Connection finally closed. Delete TCB.
-                    info!("({:?}) transitioning to CLOSED", self.state);
+                    debug!("({:?}) transitioning to CLOSED", self.state);
                     self.state = ConnectionState::CLOSED;
 
                     break;
@@ -1236,7 +1330,7 @@ impl TCB {
                         // TODO: Enter the CLOSED state and delete the TCB
                         warn!("({:?}) received RST: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         self.state = ConnectionState::CLOSED;
 
                         break;
@@ -1245,7 +1339,7 @@ impl TCB {
                     if tcph.syn() {
                         warn!("({:?}) received SYN: connection reset", self.state);
 
-                        info!("({:?}) transitioning to CLOSED", self.state);
+                        debug!("({:?}) transitioning to CLOSED", self.state);
                         // TODO: Enter the CLOSED state and delete the TCB
                         self.state = ConnectionState::CLOSED;
 
@@ -1271,6 +1365,18 @@ impl TCB {
                     if tcph.fin() {
                         self.send_ack(nic, &[])?;
                     }
+                }
+                ConnectionState::CLOSED => {
+                    debug!("({:?}) printing all buffered data received", self.state);
+
+                    let recv_buf = std::mem::take(&mut self.recv_buf);
+
+                    for (seq, data) in recv_buf.into_iter() {
+                        let data = unsafe { std::str::from_utf8_unchecked(&data) };
+                        debug!("[{}] {data}", seq);
+                    }
+
+                    break;
                 }
                 _ => {
                     warn!(
@@ -1466,7 +1572,7 @@ impl TCB {
 #[inline]
 #[allow(dead_code)]
 fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
-    info!(
+    debug!(
         "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
         iph.version(),
         iph.ihl(),
@@ -1484,7 +1590,7 @@ fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
         iph.dst(),
     );
 
-    info!(
+    debug!(
         "received tcp segment   | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?}",
         tcph.src_port(),
         tcph.dst_port(),
@@ -1503,7 +1609,7 @@ fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
         tcph.options().mss(),
     );
 
-    info!(
+    debug!(
         "received {} bytes of payload: {:x?}",
         payload.len(),
         payload

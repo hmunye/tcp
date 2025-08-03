@@ -1,4 +1,5 @@
-//! TCP implementation in user-space designed for learning purposes.
+//! TCP implementation in user-space designed for learning purposes, using the
+//! TUN/TAP interface.
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 

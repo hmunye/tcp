@@ -113,7 +113,7 @@ pub fn log(level: Level, msg: impl fmt::Display) {
         }
         Level::Debug => {
             println!(
-                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[34mDEBUG \x1b[0m: {msg}"
+                "\x1b[2m[{timestamp}]\x1b[0m \x1b[1;37m[{SOURCE}]\x1b[0m \x1b[34mDEBUG\x1b[0m: {msg}"
             );
         }
     }
