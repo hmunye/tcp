@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::parse::Ipv4Header;
+use super::Ipv4Header;
 
 /// Representation of a TCP segment header (RFC 793 3.1).
 ///

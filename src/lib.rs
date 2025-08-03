@@ -15,6 +15,5 @@ compile_error!(
 );
 
 pub mod log;
-pub mod parse;
-pub mod protocol;
+pub mod net;
 pub mod tun_tap;

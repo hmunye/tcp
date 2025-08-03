@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use crate::parse::{Ipv4Header, Protocol, TcpHeader};
+use super::{Ipv4Header, Protocol, TcpHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{info, warn};
 
@@ -217,6 +217,8 @@ impl TCB {
 
         conn.send_syn(nic)?;
 
+        info!("(ACTIVE_OPEN) transitioning to SYN_SENT");
+
         Ok(conn)
     }
 
@@ -308,6 +310,8 @@ impl TCB {
 
         conn.send_syn_ack(nic)?;
 
+        info!("(LISTEN) transitioning to SYN_RECEIVED");
+
         Ok(Some(conn))
     }
 
@@ -364,11 +368,11 @@ impl TCB {
     pub fn on_packet(
         &mut self,
         nic: &mut Tun,
-        iph: &Ipv4Header,
+        _iph: &Ipv4Header,
         tcph: &TcpHeader,
         payload: &[u8],
     ) -> Result<(), String> {
-        log_packet(iph, tcph, payload);
+        // log_packet(iph, tcph, payload);
 
         // TODO: If the RCV.WND is zero, no segments will be acceptable, but
         // special allowance should be made to accept valid ACKs, URGs and RSTs.
@@ -1462,6 +1466,7 @@ impl TCB {
 
 /// Logs the details of an incoming TCP segment.
 #[inline]
+#[allow(dead_code)]
 fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     info!(
         "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
