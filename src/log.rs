@@ -60,26 +60,24 @@ macro_rules! debug {
 /// This function will terminate the process if the current timestamp could not
 /// be determined.
 pub fn log(level: Level, msg: impl fmt::Display) {
-    let mut buf = [0u8; 20]; // "YYYY-MM-DD HH:MM:SS"
+    let mut buf = [0u8; 20]; // "YYYY-MM-DD HH:MM:SS\0"
 
     unsafe {
-        // time() returns the time as the number of seconds of type `time_t`
-        // since the Epoch, 1970-01-01 00:00:00 +0000 (UTC).
         let now = libc::time(ptr::null_mut());
+        if now == -1 {
+            panic!("{}", io::Error::last_os_error());
+        }
 
-        // localtime() converts the time provided of type `time_t` to broken-down
-        // time representation.
         let tm_ptr = libc::localtime(&now);
         if tm_ptr.is_null() {
             panic!("{}", io::Error::last_os_error());
         }
 
-        // strftime() formats the broken-down time of type `tm` according
-        // to the format specification string and places the result in `buf`.
+        // Note:
         //
-        // If the length of `buf` (including the terminating null byte)
-        // would exceed `buf.len()`, then strftime() returns 0, and the contents
-        // of `buf` are undefined.
+        // The return value 0 does not necessarily indicate an error. For
+        // example, in many locales %p yields an empty string. An empty format
+        // string will likewise yield an empty string.
         if libc::strftime(
             buf.as_mut_ptr() as *mut i8,
             buf.len(),
@@ -91,11 +89,11 @@ pub fn log(level: Level, msg: impl fmt::Display) {
         }
     }
 
-    // SAFETY: `buf` is zero-initialized and `strftime()` writes a null terminator
-    // on success.
+    // SAFETY: `buf` is zero-initialized and `strftime()` writes a null
+    // terminator on success.
     let timestamp = unsafe { CStr::from_bytes_with_nul_unchecked(&buf) }
         .to_str()
-        .unwrap_or("UNKN");
+        .unwrap_or("N/A");
 
     match level {
         Level::Error => {

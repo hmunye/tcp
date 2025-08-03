@@ -29,13 +29,12 @@ impl Tun {
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure that the provided device
-    /// name does not contain any null (`\0`) bytes, to avoid unexpected
-    /// behavior.
+    /// name does not contain any null (`\0`) bytes.
     ///
     /// # Errors
     ///
     /// Returns an error if there is an issue with the specified name or if the
-    /// process lacks the necessary privileges (CAP_NET_ADMIN).
+    /// process lacks the necessary privileges (`CAP_NET_ADMIN`).
     pub fn new(dev: &str) -> io::Result<Self> {
         Self::create_tun(dev, true)
     }
@@ -53,20 +52,17 @@ impl Tun {
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure that the provided device
-    /// name does not contain any null (`\0`) bytes, to avoid unexpected
-    /// behavior.
+    /// name does not contain any null (`\0`) bytes.
     ///
     /// # Errors
     ///
     /// Returns an error if there is an issue with the specified name or if the
-    /// process lacks the necessary privileges (CAP_NET_ADMIN).
+    /// process lacks the necessary privileges (`CAP_NET_ADMIN`).
     pub fn without_packet_info(dev: &str) -> io::Result<Self> {
         Self::create_tun(dev, false)
     }
 
     /// Returns the assigned name of the TUN virtual network device.
-    ///
-    /// # Notes
     ///
     /// The name given for creating the TUN device is more of a suggestion
     /// to the kernel rather than a requirement, so the assigned name may be
@@ -83,31 +79,30 @@ impl Tun {
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure the buffer used is large
-    /// enough. It's size should be the MTU of the interface
-    /// (typically 1500 bytes) + 4 bytes for the packet information if
-    /// configured, otherwise the packet will be truncated.
+    /// enough. It's size should be MTU_SIZE + 4 bytes for the packet
+    /// information if configured.
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         (&self.fd).read(buf)
     }
 
     /// Sends a network packet to the TUN virtual network interface.
     ///
+    /// Many errors are silently handled by the OS kernel, often resulting in
+    /// dropped packets. While packets may appear to be sent successfully, they
+    /// could be discarded by the kernel due to checksum validation failure,
+    /// high send frequency, or unassigned destination addresses.
+    ///
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure that the packet size does
     /// not exceed the MTU of the interface, and the packet is properly
     /// formatted with all appropriate headers.
-    ///
-    /// Many errors are silently handled by the OS kernel, often resulting in
-    /// dropped packets. While packets may appear to be sent successfully, they
-    /// could be discarded by the kernel due to checksum validation failure,
-    /// high send frequency, or unassigned destination addresses.
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
         (&self.fd).write(buf)
     }
 
     fn create_tun(dev: &str, with_packet_info: bool) -> io::Result<Self> {
-        // `IFNAMSIZ` defines the length of `ifr_name` field in `ifreq` struct.
+        // `IFNAMSIZ` defines the length of `ifr_name`.
         if dev.len() >= libc::IFNAMSIZ {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -145,7 +140,6 @@ impl Tun {
             return Err(io::Error::last_os_error());
         }
 
-        // Read back assigned interface name.
         let name = unsafe {
             CStr::from_ptr(ifr.ifr_name.as_ptr())
                 .to_string_lossy()

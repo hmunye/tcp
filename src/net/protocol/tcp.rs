@@ -13,7 +13,7 @@ const DEFAULT_MSS: u16 = 536;
 /// The window size advertised to the peer.
 const RECV_WND_SIZE: usize = 4096;
 
-/// Representation of a unique TCP connection.
+/// Represents a unique TCP connection.
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Socket {
     /// Source address and port.
@@ -41,7 +41,7 @@ pub struct TCB {
     open_kind: OpenKind,
 }
 
-/// Representation of a TCP connection state.
+/// Represents the different TCP connection states.
 #[derive(Debug, Eq, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum ConnectionState {
@@ -149,7 +149,7 @@ pub struct RecvSeqSpace {
     irs: u32,
 }
 
-/// Representation of the state a TCP connection was opened in.
+/// Represents the state a TCP connection was opened in.
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
 pub enum OpenKind {
