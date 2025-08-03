@@ -19,8 +19,8 @@ pid=$!
 # subnet mask isolates these two endpoints, allowing direct communication 
 # between them while preventing connections to or from other hosts. 10.0.0.1 is 
 # the locally assigned IP address processes can bind to.
-sudo ip addr add 10.0.0.1/32 peer 10.0.0.2 dev tun0
 sudo ip link set dev tun0 up
+sudo ip addr add 10.0.0.1/32 peer 10.0.0.2 dev tun0
 
 trap "kill $pid" INT TERM
 

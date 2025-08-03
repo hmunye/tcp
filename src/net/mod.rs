@@ -1,10 +1,10 @@
 //! Minimal networking primitives for TCP communication.
 //!
 //! This module provides networking functionality for the Transmission Control
-//! Protocol, as well as types for TCP and IP headers.
+//! Protocol.
 
-mod parse;
-mod protocol;
+mod headers;
+mod proto;
 
-pub use parse::*;
-pub use protocol::*;
+pub use headers::*;
+pub use proto::*;
