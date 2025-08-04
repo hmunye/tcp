@@ -22,7 +22,7 @@ use std::io;
 ///
 /// This implementation omits options (IHL should always be 5).
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Ipv4Header {
     /// The Version field indicates the format of the internet header.
     ///

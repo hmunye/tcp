@@ -1,13 +1,12 @@
 use std::collections::{HashMap, hash_map::Entry};
 use std::{io, mem, ptr};
 
-use crate::net::{Ipv4Header, Protocol, TcpHeader};
-use crate::net::{Socket, TCB};
+use crate::net::{ConnectionState, Ipv4Header, Protocol, RTO, Socket, TCB, TcpHeader};
 use crate::tun_tap::{self, MTU_SIZE};
 use crate::{debug, error, warn};
 
 /// Total number of events returned each tick (event loop cycle).
-const EPOLL_MAX_EVENTS: i32 = 2;
+const EPOLL_MAX_EVENTS: i32 = 3;
 
 /// The number of milliseconds that `epoll_wait()` will block for. -1 will
 /// block indefinitely until an event occurs.
@@ -16,6 +15,11 @@ const EPOLL_TIMEOUT_MS: i32 = -1;
 /// Runs an event loop to monitor for and process incoming IP frames from the
 /// TUN device. This function runs continuously until receiving a shutdown
 /// signal (e.g., SIGINT, SIGTERM).
+///
+/// # Notes
+///
+/// It is the users responsibility to ensure the TUN device provided is set
+/// to non-blocking before calling this function.
 ///
 /// # Errors
 ///
@@ -32,8 +36,9 @@ pub fn packet_loop(
     let mut mask: libc::sigset_t = unsafe { mem::zeroed() };
 
     let tun_fd = nic.fd();
-    let epoll_fd;
     let signal_fd;
+    let timer_fd;
+    let epoll_fd;
     let mut rdfs;
 
     unsafe {
@@ -59,6 +64,34 @@ pub fn packet_loop(
             return Err(io::Error::last_os_error());
         }
 
+        timer_fd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK);
+        if timer_fd == -1 {
+            libc::close(signal_fd);
+
+            return Err(io::Error::last_os_error());
+        }
+
+        // Ensure the timer is armed before entering the loop.
+        let time_spec = libc::itimerspec {
+            // The initial expiration time.
+            it_value: libc::timespec {
+                tv_sec: 0,
+                tv_nsec: RTO as i64,
+            },
+            // The interval for periodic expirations.
+            it_interval: libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+        };
+
+        if libc::timerfd_settime(timer_fd, 0, &raw const time_spec, ptr::null_mut()) == -1 {
+            libc::close(signal_fd);
+            libc::close(timer_fd);
+
+            return Err(io::Error::last_os_error());
+        }
+
         // `epoll()` is used to efficiently monitor multiple file descriptors
         // for I/O. Instead of blocking on each socket sequentially, this
         // approach (with non-blocking sockets) allows blocking on all
@@ -67,6 +100,7 @@ pub fn packet_loop(
         epoll_fd = libc::epoll_create1(0);
         if epoll_fd == -1 {
             libc::close(signal_fd);
+            libc::close(timer_fd);
 
             return Err(io::Error::last_os_error());
         }
@@ -77,6 +111,7 @@ pub fn packet_loop(
         // notified when it becomes ready for reading (e.g., incoming IP frame).
         if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, tun_fd, &raw mut ev) == -1 {
             libc::close(signal_fd);
+            libc::close(timer_fd);
             libc::close(epoll_fd);
 
             return Err(io::Error::last_os_error());
@@ -88,6 +123,18 @@ pub fn packet_loop(
         // SIGTERM.
         if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, signal_fd, &raw mut ev) == -1 {
             libc::close(signal_fd);
+            libc::close(timer_fd);
+            libc::close(epoll_fd);
+
+            return Err(io::Error::last_os_error());
+        }
+
+        ev.events = libc::EPOLLIN as u32;
+        ev.u64 = timer_fd as u64;
+        // Timer that signals when retransmission queue should be checked.
+        if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, timer_fd, &raw mut ev) == -1 {
+            libc::close(signal_fd);
+            libc::close(timer_fd);
             libc::close(epoll_fd);
 
             return Err(io::Error::last_os_error());
@@ -107,6 +154,7 @@ pub fn packet_loop(
 
             if rdfs == -1 {
                 libc::close(signal_fd);
+                libc::close(timer_fd);
                 libc::close(epoll_fd);
 
                 return Err(io::Error::last_os_error());
@@ -118,9 +166,55 @@ pub fn packet_loop(
                     debug!("signal caught");
 
                     libc::close(signal_fd);
+                    libc::close(timer_fd);
                     libc::close(epoll_fd);
 
                     break 'event_loop;
+                }
+
+                // Timer went off.
+                if event.u64 == timer_fd as u64 {
+                    debug!("timer went off");
+
+                    // Read from the timer to clear the expiration count and
+                    // prevent event overflow.
+                    let mut buf = [0u8; 8];
+
+                    let _ = libc::read(timer_fd, &raw mut buf as *mut libc::c_void, buf.len());
+
+                    // Iterate over all active connection to check whether
+                    // retransmissions are necessary.
+                    for (_socket, conn) in connections.iter_mut() {
+                        if conn.state() != ConnectionState::CLOSED {
+                            if let Err(err) = conn.on_conn_tick(nic) {
+                                error!("{err}");
+                            }
+                        }
+                    }
+
+                    // Ensure the timer is re-armed.
+                    let time_spec = libc::itimerspec {
+                        // The initial expiration time.
+                        it_value: libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: RTO as i64,
+                        },
+                        // The interval for periodic expirations.
+                        it_interval: libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        },
+                    };
+
+                    if libc::timerfd_settime(timer_fd, 0, &raw const time_spec, ptr::null_mut())
+                        == -1
+                    {
+                        libc::close(signal_fd);
+                        libc::close(timer_fd);
+                        libc::close(epoll_fd);
+
+                        return Err(io::Error::last_os_error());
+                    }
                 }
 
                 // The TUN interface is ready for I/O.
@@ -171,7 +265,7 @@ pub fn packet_loop(
                                         }
                                         Entry::Occupied(mut conn) => {
                                             conn.get_mut()
-                                    .on_packet(nic, &iph, &tcph, payload)
+                                    .on_conn_packet(nic, &iph, &tcph, payload)
                                     .unwrap_or_else(|err| {
                                         error!("failed to process incoming TCP segment: {err}");
                                     });

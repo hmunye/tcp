@@ -3,10 +3,9 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-// [TUN/TAP](https://www.kernel.org/doc/html/latest/networking/tuntap.html)
-#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "solaris")))]
+#[cfg(not(target_os = "linux"))]
 compile_error!(
-    "This crate only supports Unix-like operating systems with TUN/TAP device driver support."
+    "This crate only supports Linux operating systems with TUN/TAP device support and epoll."
 );
 
 pub mod log;

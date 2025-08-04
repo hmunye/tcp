@@ -1,10 +1,18 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{debug, warn};
+
+/// The initial retransmission timeout (RTO) in nanoseconds (1 second).
+pub const RTO: u64 = 1000 * 1_000_000;
+
+/// The maximum amount of times to retransmit a segment before giving up on the
+/// connection.
+const MAX_RETRANSMIT_ATTEMPTS: usize = 12;
 
 /// RFC 1122 (4.2.2.6):
 ///
@@ -24,6 +32,25 @@ pub struct Socket {
     pub dst: ([u8; 4], u16),
 }
 
+/// Represents a fully constructed TCP segment queued for retransmission.
+#[derive(Debug)]
+struct Segment {
+    /// Stored here as well because of borrow checker issues with mutability.
+    una: u32,
+    /// The IPv4 header of the segment.
+    ip: Ipv4Header,
+    /// The TCP header of the segment.
+    tcp: TcpHeader,
+    /// The data payload of the segment.
+    payload: Vec<u8>,
+    /// The timer used in determining whether the segment should be
+    /// retransmitted.
+    timer: Instant,
+    /// The amount of times this segment has been retransmitted. Used to apply
+    /// exponential backoff.
+    transmit_count: usize,
+}
+
 /// Transmission Control Block (TCB) which stores information about the state
 /// and control data for managing a TCP connection.
 #[derive(Debug)]
@@ -41,6 +68,11 @@ pub struct TCB {
     /// Using a BTreeMap so out of order segments can be retrieved in-order by
     /// sequence number.
     recv_buf: BTreeMap<u32, Vec<u8>>,
+    /// Used to store segments sent to the peer that require acknowledgment.
+    /// This include any SYN, FIN, or data segments. Any segments in the buffer
+    /// which have been unACKed will be retransmitted based on a per-connection
+    /// timer.
+    send_buf: BTreeMap<u32, Segment>,
     /// Maximum Segment Size (MSS) of peer.
     #[allow(dead_code)]
     peer_mss: u16,
@@ -49,7 +81,7 @@ pub struct TCB {
 }
 
 /// Represents the different TCP connection states.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum ConnectionState {
     /// Represents waiting for a connection request from any remote TCP and
@@ -177,7 +209,7 @@ impl TCB {
         // Initial Send Sequence Number.
         let iss = 0;
 
-        let conn = TCB {
+        let mut conn = TCB {
             state: ConnectionState::SYN_SENT,
             sock: socket,
             snd: SendSeqSpace {
@@ -215,6 +247,7 @@ impl TCB {
                 irs: 0,
             },
             recv_buf: Default::default(),
+            send_buf: Default::default(),
             // Peer's MSS value that may have been received. Will be updated
             // when peer responds.
             peer_mss: 0,
@@ -259,7 +292,7 @@ impl TCB {
         // Initial Send Sequence Number.
         let iss = 0;
 
-        let conn = TCB {
+        let mut conn = TCB {
             state: ConnectionState::SYN_RECEIVED,
             // Stored in the reverse order of the peer's perspective.
             sock: Socket {
@@ -297,6 +330,7 @@ impl TCB {
                 irs: tcph.seq_number(),
             },
             recv_buf: Default::default(),
+            send_buf: Default::default(),
             // Peer's MSS value that may have been received.
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
             open_kind: OpenKind::PASSIVE_OPEN,
@@ -320,6 +354,90 @@ impl TCB {
         debug!("(LISTEN) transitioning to SYN_RECEIVED");
 
         Ok(Some(conn))
+    }
+
+    /// Processes an existing connection for expired timers or acknowledged
+    /// segments related to it's retransmission queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the function fails to retransmit a queued segment.
+    pub fn on_conn_tick(&mut self, nic: &mut Tun) -> Result<(), String> {
+        if !self.send_buf.is_empty() {
+            let mut keys_to_remove = Vec::new();
+
+            for seg in self.send_buf.values_mut() {
+                let seg_len = seg.payload.len() as u32
+                    + if seg.tcp.syn() { 1 } else { 0 }
+                    + if seg.tcp.fin() { 1 } else { 0 };
+
+                // A segment on the retransmission queue is fully acknowledged
+                // if the sum of its sequence number and length is less or equal
+                // than the acknowledgment value in the incoming segment.
+                if seg.tcp.seq_number() + seg_len <= self.snd.una {
+                    // Can be removed from the queue
+                    keys_to_remove.push(seg.una);
+                } else if Instant::now() - seg.timer >= Duration::from_nanos(RTO) {
+                    if seg.transmit_count >= MAX_RETRANSMIT_ATTEMPTS {
+                        // TODO: This connection should also be cleaned up.
+                        self.state = ConnectionState::CLOSED;
+
+                        // Give up on the connection.
+                        //
+                        // Can't borrow `self` so manually creating RST segment.
+                        let mut rst = TcpHeader::new(
+                            self.sock.src.1,
+                            self.sock.dst.1,
+                            self.snd.nxt,
+                            self.rcv.wnd,
+                        );
+
+                        rst.set_rst();
+
+                        let mut ip = Ipv4Header::new(
+                            self.sock.src.0,
+                            self.sock.dst.0,
+                            rst.header_len() as u16,
+                            64,
+                            Protocol::TCP,
+                        )?;
+
+                        ip.set_header_checksum();
+                        rst.set_checksum(&ip, &[]);
+
+                        TCB::write(nic, &ip, &rst, &[]).map_err(|err| {
+                            format!("({:?}) failed to write RST: {err}", self.state)
+                        })?;
+
+                        continue;
+                    }
+
+                    // Must retransmit the segment.
+                    let timer = {
+                        if seg.transmit_count == 0 {
+                            Instant::now()
+                        } else {
+                            // Use exponential backoff so we don't send too
+                            // many retransmissions.
+                            Instant::now() + Duration::from_nanos(RTO * (1 << seg.transmit_count))
+                        }
+                    };
+
+                    seg.timer = timer;
+                    seg.transmit_count += 1;
+                    TCB::write(nic, &seg.ip, &seg.tcp, &seg.payload)?;
+                } else {
+                    // Peer still has time to ACK so skip.
+                }
+            }
+
+            // Remove any segments that have been acknowledged.
+            for key in keys_to_remove.into_iter() {
+                let _ = self.send_buf.remove_entry(&key);
+            }
+        }
+
+        Ok(())
     }
 
     /// Processes an incoming TCP segment for an existing connection.
@@ -372,7 +490,7 @@ impl TCB {
     ///     ------------------------>|TIME WAIT|------------------>| CLOSED  |
     ///                              +---------+                   +---------+
     /// ```
-    pub fn on_packet(
+    pub fn on_conn_packet(
         &mut self,
         nic: &mut Tun,
         iph: &Ipv4Header,
@@ -1359,7 +1477,7 @@ impl TCB {
                         break;
                     }
 
-                    // The only thing that can arrive in this state is a
+                    // TODO: The only thing that can arrive in this state is a
                     // retransmission of the remote FIN.  Acknowledge it, and
                     // restart the 2 MSL timeout.
                     if tcph.fin() {
@@ -1391,13 +1509,18 @@ impl TCB {
         Ok(())
     }
 
+    /// Returns the current state of the TCP connection
+    pub fn state(&self) -> ConnectionState {
+        self.state
+    }
+
     /// Transmits a TCP SYN packet to initiate a connection.
     ///
     /// # Errors
     ///
     /// Returns an error if the TCP segment could not be written to the TUN
     /// device.
-    fn send_syn(&self, nic: &mut Tun) -> Result<(), String> {
+    fn send_syn(&mut self, nic: &mut Tun) -> Result<(), String> {
         let mut syn = TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.iss, self.rcv.wnd);
 
         syn.set_syn();
@@ -1414,6 +1537,20 @@ impl TCB {
         ip.set_header_checksum();
         syn.set_checksum(&ip, &[]);
 
+        // Queue this segment on the send buffer so it can be retransmitted if
+        // needed.
+        self.send_buf.insert(
+            self.snd.una,
+            Segment {
+                una: self.snd.una,
+                ip,
+                tcp: syn,
+                payload: Default::default(),
+                timer: Instant::now(),
+                transmit_count: 0,
+            },
+        );
+
         TCB::write(nic, &ip, &syn, &[])
             .map_err(|err| format!("({:?}) failed to write SYN: {err}", self.state))?;
 
@@ -1426,7 +1563,7 @@ impl TCB {
     ///
     /// Returns an error if the TCP segment could not be written to the TUN
     /// device.
-    fn send_syn_ack(&self, nic: &mut Tun) -> Result<(), String> {
+    fn send_syn_ack(&mut self, nic: &mut Tun) -> Result<(), String> {
         let mut syn_ack =
             TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.iss, self.rcv.wnd);
 
@@ -1448,6 +1585,20 @@ impl TCB {
         ip.set_header_checksum();
         syn_ack.set_checksum(&ip, &[]);
 
+        // Queue this segment on the send buffer so it can be retransmitted if
+        // needed.
+        self.send_buf.insert(
+            self.snd.una,
+            Segment {
+                una: self.snd.una,
+                ip,
+                tcp: syn_ack,
+                payload: Default::default(),
+                timer: Instant::now(),
+                transmit_count: 0,
+            },
+        );
+
         TCB::write(nic, &ip, &syn_ack, &[])
             .map_err(|err| format!("({:?}) failed to write SYN_ACK: {err}", self.state))?;
 
@@ -1460,7 +1611,7 @@ impl TCB {
     ///
     /// Returns an error if the TCP segment could not be written to the TUN
     /// device.
-    fn send_ack(&self, nic: &mut Tun, payload: &[u8]) -> Result<(), String> {
+    fn send_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<(), String> {
         let mut ack = TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, self.rcv.wnd);
 
         ack.set_ack_number(self.rcv.nxt);
@@ -1472,6 +1623,22 @@ impl TCB {
 
         ip.set_header_checksum();
         ack.set_checksum(&ip, payload);
+
+        if !payload.is_empty() {
+            // Queue this segment on the send buffer so it can be retransmitted if
+            // needed.
+            self.send_buf.insert(
+                self.snd.una,
+                Segment {
+                    una: self.snd.una,
+                    ip,
+                    tcp: ack,
+                    payload: payload.into(),
+                    timer: Instant::now(),
+                    transmit_count: 0,
+                },
+            );
+        }
 
         TCB::write(nic, &ip, &ack, payload)
             .map_err(|err| format!("({:?}) failed to write ACK: {err}", self.state))?;
@@ -1485,7 +1652,7 @@ impl TCB {
     ///
     /// Returns an error if the TCP segment could not be written to the TUN
     /// device.
-    fn send_fin_ack(&self, nic: &mut Tun, payload: &[u8]) -> Result<(), String> {
+    fn send_fin_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<(), String> {
         let mut fin_ack =
             TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, self.rcv.wnd);
 
@@ -1499,6 +1666,20 @@ impl TCB {
 
         ip.set_header_checksum();
         fin_ack.set_checksum(&ip, payload);
+
+        // Queue this segment on the send buffer so it can be retransmitted if
+        // needed.
+        self.send_buf.insert(
+            self.snd.una,
+            Segment {
+                una: self.snd.una,
+                ip,
+                tcp: fin_ack,
+                payload: payload.into(),
+                timer: Instant::now(),
+                transmit_count: 0,
+            },
+        );
 
         TCB::write(nic, &ip, &fin_ack, payload)
             .map_err(|err| format!("({:?}) failed to write ACK: {err}", self.state))?;
