@@ -73,14 +73,14 @@ pub fn packet_loop(
 
         // Ensure the timer is armed before entering the loop.
         let time_spec = libc::itimerspec {
-            // The initial expiration time.
-            it_value: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: RTO as i64,
-            },
             // The interval for periodic expirations.
             it_interval: libc::timespec {
                 tv_sec: 0,
+                tv_nsec: 0,
+            },
+            // The initial expiration time.
+            it_value: libc::timespec {
+                tv_sec: RTO as i64,
                 tv_nsec: 0,
             },
         };
@@ -174,8 +174,6 @@ pub fn packet_loop(
 
                 // Timer went off.
                 if event.u64 == timer_fd as u64 {
-                    debug!("timer went off");
-
                     // Read from the timer to clear the expiration count and
                     // prevent event overflow.
                     let mut buf = [0u8; 8];
@@ -206,14 +204,14 @@ pub fn packet_loop(
 
                     // Ensure the timer is re-armed.
                     let time_spec = libc::itimerspec {
-                        // The initial expiration time.
-                        it_value: libc::timespec {
-                            tv_sec: 0,
-                            tv_nsec: RTO as i64,
-                        },
                         // The interval for periodic expirations.
                         it_interval: libc::timespec {
                             tv_sec: 0,
+                            tv_nsec: 0,
+                        },
+                        // The initial expiration time.
+                        it_value: libc::timespec {
+                            tv_sec: RTO as i64,
                             tv_nsec: 0,
                         },
                     };

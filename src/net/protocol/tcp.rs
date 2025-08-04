@@ -7,8 +7,8 @@ use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{debug, warn};
 
-/// The initial retransmission timeout (RTO) in nanoseconds (1 second).
-pub const RTO: u64 = 1000 * 1_000_000;
+/// The initial retransmission timeout (RTO) in seconds.
+pub const RTO: u64 = 1;
 
 /// The Maximum Segment Lifetime (MSL) in seconds.
 ///
