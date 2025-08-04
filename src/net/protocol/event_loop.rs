@@ -1,7 +1,7 @@
 use std::collections::{HashMap, hash_map::Entry};
 use std::{io, mem, ptr};
 
-use crate::net::{ConnectionState, Ipv4Header, Protocol, RTO, Socket, TCB, TcpHeader};
+use crate::net::{ConnectionState, Ipv4Header, MSL, Protocol, RTO, Socket, TCB, TcpHeader};
 use crate::tun_tap::{self, MTU_SIZE};
 use crate::{debug, error, warn};
 
@@ -185,9 +185,21 @@ pub fn packet_loop(
                     // Iterate over all active connection to check whether
                     // retransmissions are necessary.
                     for (_socket, conn) in connections.iter_mut() {
-                        if conn.state() != ConnectionState::CLOSED {
-                            if let Err(err) = conn.on_conn_tick(nic) {
-                                error!("{err}");
+                        match conn.state() {
+                            ConnectionState::CLOSED | ConnectionState::LISTEN => {}
+                            ConnectionState::TIME_WAIT => {
+                                // The timer has expired
+                                if conn.time_wait().elapsed()
+                                    >= std::time::Duration::from_secs(MSL * 2)
+                                {
+                                    // TODO: Connection needs to be cleaned up.
+                                    conn.set_state(ConnectionState::CLOSED);
+                                }
+                            }
+                            _ => {
+                                if let Err(err) = conn.on_conn_tick(nic) {
+                                    error!("{err}");
+                                }
                             }
                         }
                     }

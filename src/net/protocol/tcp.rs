@@ -10,6 +10,13 @@ use crate::{debug, warn};
 /// The initial retransmission timeout (RTO) in nanoseconds (1 second).
 pub const RTO: u64 = 1000 * 1_000_000;
 
+/// The Maximum Segment Lifetime (MSL) in seconds.
+///
+/// The MSL represents the maximum time a segment can exist within the network
+/// before being discarded. Typically the MSL has a value of 2 minutes
+/// (60 seconds).
+pub const MSL: u64 = 60;
+
 /// The maximum amount of times to retransmit a segment before giving up on the
 /// connection.
 const MAX_RETRANSMIT_ATTEMPTS: usize = 12;
@@ -73,6 +80,9 @@ pub struct TCB {
     /// which have been unACKed will be retransmitted based on a per-connection
     /// timer.
     send_buf: BTreeMap<u32, Segment>,
+    /// Timer used to determine when to close the connection in the TIME_WAIT
+    /// state.
+    time_wait: Instant,
     /// Maximum Segment Size (MSS) of peer.
     #[allow(dead_code)]
     peer_mss: u16,
@@ -248,6 +258,7 @@ impl TCB {
             },
             recv_buf: Default::default(),
             send_buf: Default::default(),
+            time_wait: Instant::now(),
             // Peer's MSS value that may have been received. Will be updated
             // when peer responds.
             peer_mss: 0,
@@ -331,6 +342,7 @@ impl TCB {
             },
             recv_buf: Default::default(),
             send_buf: Default::default(),
+            time_wait: Instant::now(),
             // Peer's MSS value that may have been received.
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
             open_kind: OpenKind::PASSIVE_OPEN,
@@ -377,14 +389,15 @@ impl TCB {
                 if seg.tcp.seq_number() + seg_len <= self.snd.una {
                     // Can be removed from the queue
                     keys_to_remove.push(seg.una);
-                } else if Instant::now() - seg.timer >= Duration::from_nanos(RTO) {
+                } else if seg.timer.elapsed() >= Duration::from_nanos(RTO) {
                     if seg.transmit_count >= MAX_RETRANSMIT_ATTEMPTS {
                         // TODO: This connection should also be cleaned up.
                         self.state = ConnectionState::CLOSED;
 
                         // Give up on the connection.
                         //
-                        // Can't borrow `self` so manually creating RST segment.
+                        // Can't borrow `self` so manually creating RST segment
+                        // for now.
                         let mut rst = TcpHeader::new(
                             self.sock.src.1,
                             self.sock.dst.1,
@@ -409,7 +422,9 @@ impl TCB {
                             format!("({:?}) failed to write RST: {err}", self.state)
                         })?;
 
-                        continue;
+                        // TODO: Return an error to indicate the connection is
+                        // closed.
+                        return Ok(());
                     }
 
                     // Must retransmit the segment.
@@ -1026,6 +1041,7 @@ impl TCB {
                         debug!("({:?}) transitioning to TIME_WAIT", self.state);
 
                         self.rcv.nxt += 1;
+                        self.time_wait = Instant::now();
                         self.state = ConnectionState::TIME_WAIT;
                     } else {
                         // Our FIN was ACKed.
@@ -1153,6 +1169,7 @@ impl TCB {
                         debug!("({:?}) transitioning to TIME_WAIT", self.state);
 
                         self.rcv.nxt += 1;
+                        self.time_wait = Instant::now();
                         self.state = ConnectionState::TIME_WAIT;
                     }
 
@@ -1361,6 +1378,8 @@ impl TCB {
                     // indicated it is no longer sending data, so immediately
                     // transition states.
                     debug!("({:?}) transitioning to TIME_WAIT", self.state);
+
+                    self.time_wait = Instant::now();
                     self.state = ConnectionState::TIME_WAIT;
 
                     break;
@@ -1477,10 +1496,12 @@ impl TCB {
                         break;
                     }
 
-                    // TODO: The only thing that can arrive in this state is a
-                    // retransmission of the remote FIN.  Acknowledge it, and
+                    // The only thing that can arrive in this state is a
+                    // retransmission of the remote FIN. Acknowledge it, and
                     // restart the 2 MSL timeout.
                     if tcph.fin() {
+                        self.time_wait = Instant::now();
+
                         self.send_ack(nic, &[])?;
                     }
                 }
@@ -1509,9 +1530,19 @@ impl TCB {
         Ok(())
     }
 
-    /// Returns the current state of the TCP connection
+    /// Returns the current state of the TCP connection.
     pub fn state(&self) -> ConnectionState {
         self.state
+    }
+
+    /// Sets the state of the TCP connection to the connection state provided.
+    pub fn set_state(&mut self, state: ConnectionState) {
+        self.state = state;
+    }
+
+    /// Returns the current value of the TIME_WAIT timer for the TCP connection.
+    pub fn time_wait(&self) -> Instant {
+        self.time_wait
     }
 
     /// Transmits a TCP SYN packet to initiate a connection.
