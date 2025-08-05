@@ -1,5 +1,7 @@
 use std::io;
 
+use crate::{Error, HeaderError, ParseError};
+
 /// Representation of an IPv4 datagram header (RFC 791 3.1).
 ///
 /// ```text
@@ -150,13 +152,12 @@ impl Ipv4Header {
         payload_len: u16,
         ttl: u8,
         protocol: Protocol,
-    ) -> Result<Self, String> {
+    ) -> crate::Result<Self> {
         if payload_len > Self::MAX_PAYLOAD_LEN {
-            return Err(format!(
-                "failed to create IPv4 header: provided payload length: {}, maximum allowed payload length: {}",
-                payload_len,
-                Self::MAX_PAYLOAD_LEN
-            ));
+            return Err(Error::Header(HeaderError::PayloadTooLarge {
+                provided: payload_len,
+                maximum: Self::MAX_PAYLOAD_LEN,
+            }));
         }
 
         Ok(Self {
@@ -236,6 +237,11 @@ impl Ipv4Header {
         self.header_checksum = self.compute_header_checksum();
     }
 
+    /// Returns `true` if the IPv4 header checksum is valid.
+    pub fn is_valid_checksum(&self) -> bool {
+        self.header_checksum == self.compute_header_checksum()
+    }
+
     /// Returns the Source Address field from the IPv4 header.
     pub fn src(&self) -> [u8; 4] {
         self.src_addr
@@ -263,13 +269,12 @@ impl Ipv4Header {
     ///
     /// Returns an error if the `payload_len` exceeds the maximum allowed
     /// payload length.
-    pub fn set_payload_len(&mut self, payload_len: u16) -> Result<(), String> {
+    pub fn set_payload_len(&mut self, payload_len: u16) -> crate::Result<()> {
         if payload_len > Self::MAX_PAYLOAD_LEN {
-            return Err(format!(
-                "failed to set total length for IPv4 header: provided payload length: {}, maximum allowed payload length: {}",
-                payload_len,
-                Self::MAX_PAYLOAD_LEN
-            ));
+            return Err(Error::Header(HeaderError::PayloadTooLarge {
+                provided: payload_len,
+                maximum: Self::MAX_PAYLOAD_LEN,
+            }));
         }
 
         self.total_len = Self::MIN_HEADER_LEN + payload_len;
@@ -337,13 +342,11 @@ impl Ipv4Header {
     ///
     /// # Errors
     ///
-    /// Returns an error if reading from the input stream fails or an IPv4
-    /// header could not be parsed.
-    pub fn read<T: io::Read>(input: &mut T) -> Result<Self, String> {
+    /// Returns an error if reading from the input stream fails or if parsing
+    /// the IPv4 header fails.
+    pub fn read<T: io::Read>(input: &mut T) -> crate::Result<Self> {
         let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
-        input
-            .read_exact(&mut raw_header[..])
-            .map_err(|err| format!("failed to read IPv4 header from input: {err}"))?;
+        input.read_exact(&mut raw_header[..])?;
 
         Ipv4Header::try_from(&raw_header[..])
     }
@@ -358,41 +361,38 @@ impl Ipv4Header {
     /// # Errors
     ///
     /// Returns an error if writing to the output stream fails.
-    pub fn write<T: io::Write>(&self, output: &mut T) -> Result<(), String> {
-        output
-            .write_all(&self.to_be_bytes())
-            .map_err(|err| format!("failed to write IPv4 header to output: {err}"))?;
+    pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
+        output.write_all(&self.to_be_bytes())?;
 
         Ok(())
     }
 }
 
 impl TryFrom<&[u8]> for Ipv4Header {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(header_raw: &[u8]) -> Result<Self, Self::Error> {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
-            return Err(format!(
-                "failed to read IPv4 header from input: provided header length: {}, expected header length: {}",
-                header_raw.len(),
-                Self::MIN_HEADER_LEN
-            ));
+            return Err(Error::Parse(ParseError::InvalidBufferLength {
+                provided: header_raw.len(),
+                minimum: Self::MIN_HEADER_LEN,
+            }));
         }
 
         let version_ihl = header_raw[0];
 
         if (version_ihl >> 4) != 4 {
-            return Err(format!(
-                "failed to read IPv4 header from input: provided version number: {}, expected version number: 4",
-                version_ihl >> 4
-            ));
+            return Err(Error::Parse(ParseError::InvalidVersion {
+                provided: version_ihl >> 4,
+                expected: 4,
+            }));
         }
 
         if (version_ihl & 0xF) != 5 {
-            return Err(format!(
-                "failed to read IPv4 header from input: provided ihl value: {}, expected ihl value: 5",
-                version_ihl & 0xF
-            ));
+            return Err(Error::Parse(ParseError::InvalidIhl {
+                provided: version_ihl & 0xF,
+                expected: 5,
+            }));
         }
 
         Ok(Self {
@@ -402,11 +402,10 @@ impl TryFrom<&[u8]> for Ipv4Header {
                 let total_len = u16::from_be_bytes([header_raw[2], header_raw[3]]);
 
                 if total_len < ((version_ihl & 0xF) << 2) as u16 {
-                    return Err(format!(
-                        "failed to read IPv4 header from input: provided total length: {}, indicated header length: {}",
-                        total_len,
-                        (version_ihl & 0xF) << 2
-                    ));
+                    return Err(Error::Parse(ParseError::InvalidTotalLength {
+                        provided: total_len,
+                        actual: ((version_ihl & 0xF) << 2),
+                    }));
                 }
 
                 total_len
@@ -414,8 +413,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
             id: u16::from_be_bytes([header_raw[4], header_raw[5]]),
             flags_and_offset: u16::from_be_bytes([header_raw[6], header_raw[7]]),
             ttl: header_raw[8],
-            protocol: Protocol::try_from(header_raw[9])
-                .map_err(|err| format!("failed to read IPv4 header from input: {err}"))?,
+            protocol: Protocol::try_from(header_raw[9])?,
             header_checksum: u16::from_be_bytes([header_raw[10], header_raw[11]]),
             src_addr: [
                 header_raw[12],
@@ -542,7 +540,7 @@ impl From<Protocol> for u8 {
 }
 
 impl TryFrom<u8> for Protocol {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(val: u8) -> Result<Self, Self::Error> {
         match val {
@@ -581,7 +579,7 @@ impl TryFrom<u8> for Protocol {
             33 => Ok(Protocol::SEP),
             34 => Ok(Protocol::_3PC),
             35 => Ok(Protocol::IDPR),
-            _ => Err(format!("provided invalid protocol number: {val}")),
+            _ => Err(Error::Parse(ParseError::InvalidProtocol(val))),
         }
     }
 }

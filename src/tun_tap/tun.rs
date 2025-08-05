@@ -1,11 +1,13 @@
 use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::{mem, ptr};
 
+use crate::{Error, Result, errno};
+
 /// The Maximum Transmission Unit (MTU) for the TUN interface. Does NOT account
-/// for packet information if configured when creating TUN interface.
+/// for leading packet information bytes if configured.
 pub const MTU_SIZE: usize = 1500;
 
 /// Represents a TUN (network TUNnel) interface, a virtual network device that
@@ -24,7 +26,7 @@ impl Tun {
     ///
     /// - Flags [2 bytes]
     /// - Proto [2 bytes] [EtherType](https://en.wikipedia.org/wiki/EtherType)
-    /// - Raw protocol (IP, IPv6, etc) frame [MTU bytes]
+    /// - Raw protocol (IP, IPv6, etc) frame
     ///
     /// # Notes
     ///
@@ -33,9 +35,10 @@ impl Tun {
     ///
     /// # Errors
     ///
-    /// Returns an error if there is an issue with the specified name or if the
-    /// process lacks the necessary privileges (`CAP_NET_ADMIN`).
-    pub fn new(dev: &str) -> io::Result<Self> {
+    /// Returns an error if the TUN device cannot be opened, if there's a
+    /// problem with the provided name, or if the process does not have the
+    /// required `CAP_NET_ADMIN` privilege.    
+    pub fn new(dev: &str) -> Result<Self> {
         Self::create_tun(dev, true)
     }
 
@@ -47,7 +50,7 @@ impl Tun {
     /// - Flags [2 bytes]
     /// - Proto [2 bytes] [EtherType](https://en.wikipedia.org/wiki/EtherType)
     ///
-    /// and only contain the raw protocol (IP, IPv6, etc) frame [MTU bytes].
+    /// and only contain the raw protocol (IP, IPv6, etc) frame.
     ///
     /// # Notes
     ///
@@ -56,9 +59,10 @@ impl Tun {
     ///
     /// # Errors
     ///
-    /// Returns an error if there is an issue with the specified name or if the
-    /// process lacks the necessary privileges (`CAP_NET_ADMIN`).
-    pub fn without_packet_info(dev: &str) -> io::Result<Self> {
+    /// Returns an error if the TUN device cannot be opened, if there's a
+    /// problem with the provided name, or if the process does not have the
+    /// required `CAP_NET_ADMIN` privilege.    
+    pub fn without_packet_info(dev: &str) -> Result<Self> {
         Self::create_tun(dev, false)
     }
 
@@ -84,29 +88,37 @@ impl Tun {
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure the buffer used is large
-    /// enough. It's size should be MTU_SIZE + 4 bytes for the packet
+    /// enough. It's size should be MTU_SIZE + 4 bytes for the leading packet
     /// information if configured.
-    pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.fd).read(buf)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if data could not be read from the TUN device.
+    pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
+        (&self.fd).read(buf).map_err(|err| err.into())
     }
 
     /// Sends a network packet to the TUN virtual network interface.
-    ///
-    /// Many errors are silently handled by the OS kernel, often resulting in
-    /// dropped packets. While packets may appear to be sent successfully, they
-    /// could be discarded by the kernel due to checksum validation failure,
-    /// high send frequency, or unassigned destination addresses.
     ///
     /// # Notes
     ///
     /// It is the caller's responsibility to ensure that the packet size does
     /// not exceed the MTU of the interface, and the packet is properly
     /// formatted with all appropriate headers.
-    pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
-        (&self.fd).write(buf)
+    ///
+    /// Many errors are silently handled by the OS kernel, often resulting in
+    /// dropped packets. While packets may appear to be sent successfully, they
+    /// could be discarded by the kernel due to checksum validation failure,
+    /// high send frequency, or unassigned destination addresses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if data could not be written to the TUN device.
+    pub fn send(&self, buf: &[u8]) -> Result<usize> {
+        (&self.fd).write(buf).map_err(|err| err.into())
     }
 
-    /// Sets the TUN interface to be non-blocking.
+    /// Sets the TUN virtual network interface to be non-blocking.
     ///
     /// # Notes
     ///
@@ -115,32 +127,30 @@ impl Tun {
     ///
     /// # Errors
     ///
-    /// Returns an error if the function failed to set the file descriptor to
-    /// non-blocking.
-    pub fn set_non_blocking(&self) -> io::Result<()> {
+    /// Returns an error if the file handle could not be set to non-blocking.
+    pub fn set_non_blocking(&self) -> Result<()> {
         let fd = self.as_raw_fd();
 
-        // Get current flags so they can be combined with `O_NONBLOCK` instead
-        // of clobbered.
+        // Get current flags so they can be combined with `O_NONBLOCK`.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to get flags of TUN file handle"));
         }
 
         if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to set TUN file handle to non-blocking"));
         }
 
         Ok(())
     }
 
-    fn create_tun(dev: &str, with_packet_info: bool) -> io::Result<Self> {
-        // `IFNAMSIZ` defines the length of `ifr_name`.
+    fn create_tun(dev: &str, with_packet_info: bool) -> Result<Self> {
+        // The interface name, if provided, must be less than `IFNAMSIZ` bytes.
         if dev.len() >= libc::IFNAMSIZ {
-            return Err(io::Error::new(
+            return Err(Error::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "interface name too long",
-            ));
+            )));
         }
 
         let fd = OpenOptions::new()
@@ -160,6 +170,7 @@ impl Tun {
         };
 
         unsafe {
+            // SAFETY: `dev.len()` is less than `IFNAMSIZ`.
             ptr::copy_nonoverlapping(
                 dev.as_ptr(),
                 ifr.ifr_name.as_mut_ptr() as *mut u8,
@@ -170,9 +181,12 @@ impl Tun {
         }
 
         if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TUNSETIFF, &ifr) } == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(errno!(
+                "failed to bind network interface with TUN file handle"
+            ));
         }
 
+        // SAFETY: `ifr_name` remains null-terminated after copying `dev`.
         let name = unsafe {
             CStr::from_ptr(ifr.ifr_name.as_ptr())
                 .to_string_lossy()
@@ -180,12 +194,6 @@ impl Tun {
         };
 
         Ok(Self { fd, name })
-    }
-}
-
-impl IntoRawFd for Tun {
-    fn into_raw_fd(self) -> RawFd {
-        self.fd.into_raw_fd()
     }
 }
 

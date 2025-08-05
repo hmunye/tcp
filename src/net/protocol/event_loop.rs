@@ -1,9 +1,13 @@
 use std::collections::{HashMap, hash_map::Entry};
-use std::{io, mem, ptr};
+use std::{mem, ptr};
 
+// TODO: Use the connection errors returned to determine whether to remove the
+// connection from the hash map.
+
+use crate::Result;
 use crate::net::{ConnectionState, Ipv4Header, MSL, Protocol, RTO, Socket, TCB, TcpHeader};
 use crate::tun_tap::{self, MTU_SIZE};
-use crate::{debug, error, warn};
+use crate::{debug, errno, error, warn};
 
 /// Total number of events returned each tick (event loop cycle).
 const EPOLL_MAX_EVENTS: i32 = 3;
@@ -14,7 +18,7 @@ const EPOLL_TIMEOUT_MS: i32 = -1;
 
 /// Runs an event loop to monitor for and process incoming IP frames from the
 /// TUN device. This function runs continuously until receiving a shutdown
-/// signal (e.g., SIGINT, SIGTERM).
+/// signal (e.g., SIGINT, SIGTERM) or encountering an error.
 ///
 /// # Notes
 ///
@@ -24,10 +28,7 @@ const EPOLL_TIMEOUT_MS: i32 = -1;
 /// # Errors
 ///
 /// Returns an error if the event loop could not be successfully initialized.
-pub fn packet_loop(
-    nic: &mut tun_tap::Tun,
-    connections: &mut HashMap<Socket, TCB>,
-) -> io::Result<()> {
+pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB>) -> Result<()> {
     let mut ev = libc::epoll_event { events: 0, u64: 0 };
 
     // Array of events for ready file descriptors.
@@ -44,31 +45,31 @@ pub fn packet_loop(
     unsafe {
         // Initialize the signal set, excluding all signals.
         if libc::sigemptyset(&raw mut mask) == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to initialize signal set"));
         }
 
         // Add both SIGINT and SIGTERM to the set.
         if libc::sigaddset(&raw mut mask, libc::SIGINT) == -1
             || libc::sigaddset(&raw mut mask, libc::SIGTERM) == -1
         {
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to update signal set"));
         }
 
         // Blocks SIGINT and SIGTERM from being intercepted by default handlers.
         if libc::sigprocmask(libc::SIG_BLOCK, &raw const mask, ptr::null_mut()) == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to block signals on signal set"));
         }
 
         signal_fd = libc::signalfd(-1, &raw const mask, 0);
         if signal_fd == -1 {
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to create signal_fd"));
         }
 
         timer_fd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK);
         if timer_fd == -1 {
             libc::close(signal_fd);
 
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to create timer_fd"));
         }
 
         // Ensure the timer is armed before entering the loop.
@@ -89,7 +90,7 @@ pub fn packet_loop(
             libc::close(signal_fd);
             libc::close(timer_fd);
 
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to initialize timer"));
         }
 
         // `epoll()` is used to efficiently monitor multiple file descriptors
@@ -102,19 +103,7 @@ pub fn packet_loop(
             libc::close(signal_fd);
             libc::close(timer_fd);
 
-            return Err(io::Error::last_os_error());
-        }
-
-        ev.events = libc::EPOLLIN as u32;
-        ev.u64 = tun_fd as u64;
-        // Add the TUN's file descriptor to the epoll interest list to be
-        // notified when it becomes ready for reading (e.g., incoming IP frame).
-        if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, tun_fd, &raw mut ev) == -1 {
-            libc::close(signal_fd);
-            libc::close(timer_fd);
-            libc::close(epoll_fd);
-
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to create epoll_fd"));
         }
 
         ev.events = libc::EPOLLIN as u32;
@@ -126,7 +115,7 @@ pub fn packet_loop(
             libc::close(timer_fd);
             libc::close(epoll_fd);
 
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to add to epoll interest list"));
         }
 
         ev.events = libc::EPOLLIN as u32;
@@ -137,7 +126,19 @@ pub fn packet_loop(
             libc::close(timer_fd);
             libc::close(epoll_fd);
 
-            return Err(io::Error::last_os_error());
+            return Err(errno!("failed to add to epoll interest list"));
+        }
+
+        ev.events = libc::EPOLLIN as u32;
+        ev.u64 = tun_fd as u64;
+        // Add the TUN's file descriptor to the epoll interest list to be
+        // notified when it becomes ready for reading (e.g., incoming IP frame).
+        if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, tun_fd, &raw mut ev) == -1 {
+            libc::close(signal_fd);
+            libc::close(timer_fd);
+            libc::close(epoll_fd);
+
+            return Err(errno!("failed to add to epoll interest list"));
         }
     }
 
@@ -157,7 +158,7 @@ pub fn packet_loop(
                 libc::close(timer_fd);
                 libc::close(epoll_fd);
 
-                return Err(io::Error::last_os_error());
+                return Err(errno!("failed to wait on epoll"));
             }
 
             for event in events.iter().take(rdfs as usize) {
@@ -223,7 +224,7 @@ pub fn packet_loop(
                         libc::close(timer_fd);
                         libc::close(epoll_fd);
 
-                        return Err(io::Error::last_os_error());
+                        return Err(errno!("failed to rearm timer"));
                     }
                 }
 

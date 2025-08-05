@@ -1,6 +1,7 @@
 use std::io;
 
-use super::Ipv4Header;
+use crate::net::Ipv4Header;
+use crate::{Error, HeaderError, ParseError};
 
 /// Representation of a TCP segment header (RFC 793 3.1).
 ///
@@ -280,6 +281,11 @@ impl TcpHeader {
         self.checksum = self.compute_checksum(ip_header, payload);
     }
 
+    /// Returns `true` if the TCP header checksum is valid.
+    pub fn is_valid_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> bool {
+        self.checksum == self.compute_checksum(ip_header, payload)
+    }
+
     /// Returns the Urgent Pointer field from the TCP header.
     pub fn urgent_pointer(&self) -> u16 {
         self.urgent_pointer
@@ -296,7 +302,7 @@ impl TcpHeader {
     ///
     /// Returns an error if the options buffer lacks sufficient space to append
     /// the MSS, or if the provided MSS value is invalid.
-    pub fn set_option_mss(&mut self, mss: u16) -> Result<(), String> {
+    pub fn set_option_mss(&mut self, mss: u16) -> crate::Result<()> {
         self.options.set_mss(mss)?;
 
         // Convert options length to representation of total bytes and add to
@@ -433,14 +439,11 @@ impl TcpHeader {
     ///
     /// # Errors
     ///
-    /// Returns an error if reading from the input stream fails or a TCP header
-    /// could not be parsed.
-    pub fn read<T: io::Read>(input: &mut T) -> Result<Self, String> {
+    /// Returns an error if reading from the input stream fails or if parsing
+    /// the TCP header fails.
+    pub fn read<T: io::Read>(input: &mut T) -> crate::Result<Self> {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
-
-        let nbytes = input
-            .read(&mut raw_header[..])
-            .map_err(|err| format!("failed to read TCP header from input: {err}"))?;
+        let nbytes = input.read(&mut raw_header[..])?;
 
         TcpHeader::try_from(&raw_header[..nbytes])
     }
@@ -455,47 +458,41 @@ impl TcpHeader {
     /// # Errors
     ///
     /// Returns an error if writing to the output stream fails.
-    pub fn write<T: io::Write>(&self, output: &mut T) -> Result<(), String> {
+    pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
         let (raw_header, nbytes) = self.to_be_bytes();
-
-        output
-            .write_all(&raw_header[..nbytes])
-            .map_err(|err| format!("failed to write TCP header to output: {err}"))?;
+        output.write_all(&raw_header[..nbytes])?;
 
         Ok(())
     }
 }
 
 impl TryFrom<&[u8]> for TcpHeader {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(header_raw: &[u8]) -> Result<Self, Self::Error> {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
-            return Err(format!(
-                "failed to read TCP header from input: provided header length: {}, minimum header length: {}",
-                header_raw.len(),
-                Self::MIN_HEADER_LEN
-            ));
+            return Err(Error::Parse(ParseError::InvalidBufferLength {
+                provided: header_raw.len(),
+                minimum: Self::MIN_HEADER_LEN,
+            }));
         }
 
         let offset_and_control_bits = u16::from_be_bytes([header_raw[12], header_raw[13]]);
         let data_offset = offset_and_control_bits >> 12;
 
         if data_offset < Self::MIN_DATA_OFFSET {
-            return Err(format!(
-                "failed to read TCP header from input: provided data offset: {}, minimum data offset: {}",
-                data_offset,
-                Self::MIN_DATA_OFFSET
-            ));
+            return Err(Error::Parse(ParseError::InvalidDataOffset {
+                provided: data_offset,
+                minimum: Self::MIN_DATA_OFFSET,
+            }));
         }
 
         // There are less bytes in the buffer than advertised by data offset.
         if (data_offset << 2) > header_raw.len() as u16 {
-            return Err(format!(
-                "failed to read TCP header from input: provied header length: {}, indicated header length: {}",
-                header_raw.len(),
-                data_offset >> 2
-            ));
+            return Err(Error::Parse(ParseError::HeaderLengthMismatch {
+                provided: header_raw.len(),
+                actual: data_offset << 2,
+            }));
         }
 
         Ok(Self {
@@ -518,23 +515,21 @@ impl TryFrom<&[u8]> for TcpHeader {
             checksum: u16::from_be_bytes([header_raw[16], header_raw[17]]),
             urgent_pointer: u16::from_be_bytes([header_raw[18], header_raw[19]]),
             options: {
-                // There are advertised options present in the header.
+                // There are options present in the header.
                 if data_offset > Self::MIN_DATA_OFFSET {
                     let rest_len = header_raw[20..].len();
 
                     // SAFETY: Checked data offset >= Self::MIN_DATA_OFFSET.
                     if ((data_offset - Self::MIN_DATA_OFFSET) << 2) as usize != rest_len {
-                        return Err(format!(
-                            "failed to read TCP header from input: provided options length: {}, indicated options length: {}",
-                            rest_len,
-                            (data_offset - Self::MIN_DATA_OFFSET) << 2
-                        ));
+                        return Err(Error::Parse(ParseError::OptionsLengthMismatch {
+                            provided: rest_len,
+                            actual: ((data_offset - Self::MIN_DATA_OFFSET) << 2),
+                        }));
                     }
 
                     // Limit range so payload bytes are not accidentally read as
                     // options.
-                    TcpOptions::try_from(&header_raw[20..(data_offset << 2) as usize])
-                        .map_err(|err| format!("failed to read TCP header from input: {err}"))?
+                    TcpOptions::try_from(&header_raw[20..(data_offset << 2) as usize])?
                 } else {
                     TcpOptions::new()
                 }
@@ -589,6 +584,11 @@ impl TcpOptions {
         }
     }
 
+    /// Returns the length of the TCP options in bytes.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     /// Returns the Maximum Segment Size (MSS) value from the TCP options, if
     /// present.
     pub fn mss(&self) -> Option<u16> {
@@ -634,26 +634,23 @@ impl TcpOptions {
     ///
     /// Returns an error if the options buffer lacks sufficient space to append
     /// the MSS, or if the provided MSS value is invalid.
-    pub fn set_mss(&mut self, mss: u16) -> Result<(), String> {
+    pub fn set_mss(&mut self, mss: u16) -> crate::Result<()> {
         if self.mss().is_some() {
             // Skip setting MSS option is it already exists...
         } else {
             const MSS_LEN: usize = 4;
 
             if mss == 0 {
-                return Err(
-                    "failed to append MSS option to TCP options: invalid MSS value: 0".into(),
-                );
+                return Err(Error::Header(HeaderError::InvalidMssOption(mss)));
             }
 
             let opts_len = self.len();
 
             if (opts_len + MSS_LEN) as u16 > Self::MAX_OPTIONS_LEN {
-                return Err(format!(
-                    "failed to append MSS option to TCP options: options length if appended {}, maximum allowed buffer length: {}",
-                    opts_len + MSS_LEN,
-                    Self::MAX_OPTIONS_LEN
-                ));
+                return Err(Error::Header(HeaderError::InsufficientOptionSpace {
+                    attempted: (opts_len + MSS_LEN),
+                    maximum: Self::MAX_OPTIONS_LEN,
+                }));
             }
 
             let mut mss_option = [0u8; MSS_LEN];
@@ -667,11 +664,6 @@ impl TcpOptions {
         }
 
         Ok(())
-    }
-
-    /// Returns the length of the TCP options in bytes.
-    pub fn len(&self) -> usize {
-        self.len
     }
 
     /// Returns `true` if the TCP options contains no bytes.
@@ -689,15 +681,14 @@ impl TcpOptions {
 }
 
 impl TryFrom<&[u8]> for TcpOptions {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(opts_slice: &[u8]) -> Result<Self, Self::Error> {
         if opts_slice.len() > Self::MAX_OPTIONS_LEN as usize {
-            return Err(format!(
-                "provided options length: {}, maximum allowed options length: {}",
-                opts_slice.len(),
-                Self::MAX_OPTIONS_LEN
-            ));
+            return Err(Error::Parse(ParseError::InvalidOptionsLength {
+                provided: opts_slice.len(),
+                maximum: Self::MAX_OPTIONS_LEN,
+            }));
         }
 
         let len = opts_slice.len();
