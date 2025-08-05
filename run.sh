@@ -16,7 +16,7 @@ target/release/tcp &
 pid=$!
 
 # Sets up a point-to-point connection between 10.0.0.1 and 10.0.0.2. The /32 
-# subnet mask isolates these two endpoints, allowing direct communication 
+# subnet mask isolates these two endpoints, allowing for direct communication 
 # between them while preventing connections from other hosts. 10.0.0.1 is the 
 # locally assigned IP address processes can bind to.
 sudo ip link set dev tun0 up
