@@ -1,4 +1,4 @@
-//! TCP implementation in user-space designed for learning purposes, using the
+//! TCP implementation in user-space, built for learning purposes, using the
 //! TUN/TAP interface.
 //!
 //! Not suitable for production use.

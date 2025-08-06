@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 authors = ["Huseen Munye"]
 description = """
-TCP implementation in user-space designed for learning purposes, using the TUN/TAP interface.
+TCP implementation in user-space, built for learning purposes, using the TUN/TAP interface.
 """
 repository = "https://github.com/hmunye/tcp"
 readme = "README.md"

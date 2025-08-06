@@ -1,7 +1,6 @@
 # tcp
 
-TCP implementation in user-space designed for learning purposes, using the 
-TUN/TAP interface.
+TCP implementation in user-space, built for learning purposes, using the TUN/TAP interface.
 
 > [!WARNING]
 > Not suitable for production use.
@@ -44,14 +43,12 @@ TUN/TAP interface.
 
 ## Testing
 
-Testing combines unit tests for header parsing with manual integration tests for
-protocol behavior. The goal is to verify protocol correctness at the packet and 
-state machine levels.
+Testing combines unit tests for header parsing with manual integration tests for protocol behavior. 
+The goal is to verify protocol correctness at the packet and state machine levels.
 
 ### Unit Tests
 
-Unit tests validate serialization and parsing logic for both IPv4 and TCP 
-(including options) headers.
+Unit tests validate serialization and parsing logic for both IPv4 and TCP (including options) headers.
 
 Run all unit tests with:
 
@@ -61,15 +58,13 @@ cargo t
 
 ### Manual Testing
 
-Manual tests validate the full TCP implementation under more realistic scenarios,
-including connection establishment, teardown, retransmission, segment reordering,
-timeout, and malformed packets. 
+Manual tests validate the full TCP implementation under more realistic scenarios, including connection establishment, teardown, retransmission, segment reordering, timeout, and malformed packets. 
 
 Tools used include:
 
 - [tshark](https://www.wireshark.org/docs/man-pages/tshark.html)
 - [netcat](https://netcat.sourceforge.net/)
-- [hping3](https://www.kali.org/tools/hping3/).
+- [hping3](https://www.kali.org/tools/hping3/)
 
 ## References
 - [Jon Gjengset - Implementing TCP in Rust](https://www.youtube.com/watch?v=bzja9fQWzdA)
