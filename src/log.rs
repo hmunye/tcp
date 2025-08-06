@@ -51,8 +51,8 @@ macro_rules! debug {
 
 /// Logs a message with the given severity level.
 ///
-/// - Messages with level [Level::Info] and [Level::Debug] are printed to stdout.
-/// - Messages with level [Level::Warn] and [Level::Error] are printed to stderr.
+/// - Messages with [Level::Info] and [Level::Debug] are printed to stdout.
+/// - Messages with [Level::Warn] and [Level::Error] are printed to stderr.
 pub fn log(level: Level, msg: impl std::fmt::Display) {
     let now = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
@@ -60,8 +60,8 @@ pub fn log(level: Level, msg: impl std::fmt::Display) {
         .as_secs();
 
     let time = now as i64;
-
     let tm = unsafe { libc::localtime(&time) };
+
     let timestamp = if tm.is_null() {
         "UNKNOWN".to_string()
     } else {

@@ -1,12 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
 use crate::tun_tap::{MTU_SIZE, Tun};
 use crate::{Error, Result};
-use crate::{debug, warn};
+use crate::{debug, error, warn};
 
 /// Retransmission Timeout (RTO) in seconds.
 pub const RTO: u64 = 1;
@@ -14,12 +15,12 @@ pub const RTO: u64 = 1;
 /// Maximum Segment Lifetime (MSL) in seconds.
 ///
 /// The MSL represents the maximum time a segment can exist within the network
-/// before being discarded. Typically has a value of 2 minutes (120 seconds).
-pub const MSL: u64 = 120;
+/// before being discarded.
+pub const MSL: u64 = 60;
 
 /// The maximum number of retransmission attempts for a segment before giving up
 /// on the connection.
-const MAX_RETRANSMIT_ATTEMPTS: usize = 8;
+const MAX_RETRANSMIT_ATTEMPTS: usize = 5;
 
 /// RFC 1122 (4.2.2.6):
 ///
@@ -27,7 +28,7 @@ const MAX_RETRANSMIT_ATTEMPTS: usize = 8;
 /// default send MSS of 536 (576-40).
 const DEFAULT_MSS: u16 = 536;
 
-/// The window size advertised to the peer.
+/// Our window size advertised to the peer.
 const RCV_WND_SIZE: u16 = 4096;
 
 /// Represents a unique TCP connection.
@@ -39,11 +40,28 @@ pub struct Socket {
     pub(crate) dst: ([u8; 4], u16),
 }
 
+impl fmt::Display for Socket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}.{}:{} -> {}.{}.{}.{}:{}",
+            self.src.0[0],
+            self.src.0[1],
+            self.src.0[2],
+            self.src.0[3],
+            self.src.1,
+            self.dst.0[0],
+            self.dst.0[1],
+            self.dst.0[2],
+            self.dst.0[3],
+            self.dst.1,
+        )
+    }
+}
+
 /// Represents a fully constructed TCP segment queued for retransmission.
 #[derive(Debug)]
 struct Segment {
-    /// Stored here because of borrow checker issues with mutability.
-    una: u32,
     /// The IPv4 header of the segment.
     ip: Ipv4Header,
     /// The TCP header of the segment.
@@ -74,7 +92,7 @@ pub struct TCB {
     ///
     /// Using a BTreeMap so out of order segments can be retrieved in-order by
     /// sequence number.
-    recv_buf: BTreeMap<u32, Vec<u8>>,
+    pub(crate) recv_buf: BTreeMap<u32, Vec<u8>>,
     /// Buffer to store acknowledgeable segments sent to the peer.
     ///
     /// Any segments in this buffer which have been unACKed will be
@@ -246,17 +264,17 @@ impl TCB {
             recv_buf: Default::default(),
             send_buf: Default::default(),
             time_wait: Instant::now(),
-            // Peer's MSS value that may have been received. Will be updated
-            // when peer responds.
+            // Will be updated when peer responds.
             peer_mss: 0,
             open_kind: OpenKind::ACTIVE_OPEN,
         };
 
-        conn.send_syn(nic)?;
         debug!(
-            "[{:?}:{} -> {:?}:{}] (ACTIVE_OPEN) sent SYN: ACTIVE_OPEN -> SYN_SENT",
-            conn.sock.src.0, conn.sock.src.1, conn.sock.dst.0, conn.sock.dst.1
+            "[{}] (ACTIVE_OPEN) sending SYN: ACTIVE_OPEN -> SYN_SENT",
+            conn.sock
         );
+
+        conn.send_syn(nic)?;
 
         Ok(conn)
     }
@@ -273,16 +291,17 @@ impl TCB {
 
         // An incoming RST should be ignored.
         if tcph.rst() {
-            warn!("(LISTEN) received RST: ignoring");
+            debug!("(LISTEN) received RST: ignoring");
             return Ok(None);
         }
 
         // Any acknowledgment is bad if it arrives on a connection still in the
         // LISTEN state.
         if tcph.ack() {
-            warn!("(LISTEN) received ACK: sending RST");
+            debug!("(LISTEN) received ACK: sending RST");
 
             let mut rst = TcpHeader::new(tcph.dst_port(), tcph.src_port(), tcph.ack_number(), 0);
+
             rst.set_rst();
 
             let mut ip = Ipv4Header::new(
@@ -302,7 +321,7 @@ impl TCB {
         }
 
         if !tcph.syn() {
-            warn!("(LISTEN) did not receive SYN: ignoring");
+            debug!("(LISTEN) did not receive SYN: ignoring");
             return Ok(None);
         }
 
@@ -349,16 +368,16 @@ impl TCB {
             recv_buf: Default::default(),
             send_buf: Default::default(),
             time_wait: Instant::now(),
-            // Peer's MSS value that may have been received.
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
             open_kind: OpenKind::PASSIVE_OPEN,
         };
 
-        conn.send_syn_ack(nic)?;
         debug!(
-            "[{:?}:{} -> {:?}:{}] (LISTEN) sent SYN_ACK: LISTEN -> SYN_RECEIVED",
-            conn.sock.src.0, conn.sock.src.1, conn.sock.dst.0, conn.sock.dst.1
+            "[{}] (LISTEN) received SYN, sending SYN_ACK: LISTEN/PASSIVE_OPEN -> SYN_RECEIVED",
+            conn.sock
         );
+
+        conn.send_syn_ack(nic)?;
 
         Ok(Some(conn))
     }
@@ -372,79 +391,78 @@ impl TCB {
     /// Returns an error if the function fails to retransmit a queued segment.
     pub fn on_conn_tick(&mut self, nic: &mut Tun) -> Result<()> {
         if !self.send_buf.is_empty() {
-            // Keep track of segments to remove from the retransmission queue.
-            let mut key_rm = Vec::new();
-
-            for seg in self.send_buf.values_mut() {
+            // Remove segments that have been acknowledged fully or have been
+            // retransmitted `MAX_RETRANSMIT_ATTEMPTS` times.
+            self.send_buf.retain(|_, seg| {
                 let seg_len = seg.payload.len() as u32
                     + if seg.tcp.syn() { 1 } else { 0 }
                     + if seg.tcp.fin() { 1 } else { 0 };
+
+                // Apply exponential backoff to avoid excessive retransmissions.
+                let effective_rto = Duration::from_secs(RTO * (1 << seg.transmit_count));
 
                 // A segment on the retransmission queue is fully acknowledged
                 // if the sum of its sequence number and length is less or equal
                 // than the acknowledgment value in the incoming segment.
                 if seg.tcp.seq_number().wrapping_add(seg_len) <= self.snd.una {
-                    key_rm.push(seg.una);
-                } else if seg.timer.elapsed() >= Duration::from_secs(RTO) {
+                    false
+                } else if seg.timer.elapsed() >= effective_rto {
+                    // Need to close the connection.
                     if seg.transmit_count >= MAX_RETRANSMIT_ATTEMPTS {
-                        // Need to close the connection.
-                        self.state = ConnectionState::CLOSED;
-                        debug!(
-                            "[{:?}:{} -> {:?}:{}] ({state:?}) max retransmit attempts reached: {state:?} -> CLOSED",
-                            self.sock.src.0,
-                            self.sock.src.1,
-                            self.sock.dst.0,
-                            self.sock.dst.1,
+                        warn!(
+                            "[{}] ({state:?}) max retransmit attempts reached, sending RST: {state:?} -> CLOSED",
+                            self.sock,
                             state = self.state,
                         );
+
+                        // Used to indicate connection can be removed.
+                        self.state = ConnectionState::CLOSED;
 
                         // Can't borrow `self` so manually creating RST segment.
                         let mut rst =
                             TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, 0);
+
                         rst.set_rst();
 
+                        // SAFETY: The payload length is less than the maximum 
+                        // payload length allowed.
                         let mut ip = Ipv4Header::new(
                             self.sock.src.0,
                             self.sock.dst.0,
                             rst.header_len() as u16,
                             64,
                             Protocol::TCP,
-                        )?;
+                        ).unwrap();
 
                         ip.set_header_checksum();
                         rst.set_checksum(&ip, &[]);
 
-                        TCB::write(nic, &ip, &rst, &[])?;
-
-                        return Err(Error::Io(io::Error::new(
-                            io::ErrorKind::ConnectionReset,
-                            "connection reset",
-                        )));
-                    }
-
-                    let timer = {
-                        if seg.transmit_count == 0 {
-                            Instant::now()
-                        } else {
-                            // Apply exponential backoff to avoid excessive
-                            // retransmissions.
-                            Instant::now() + Duration::from_nanos(RTO * (1 << seg.transmit_count))
+                        if let Err(err) = TCB::write(nic, &ip, &rst, &[]) {
+                            error!("{err}");
                         }
-                    };
 
-                    seg.timer = timer;
-                    seg.transmit_count += 1;
+                        false
+                    } else {
+                        // Retransmit segment.
+                        seg.timer = Instant::now();
+                        seg.transmit_count += 1;
 
-                    TCB::write(nic, &seg.ip, &seg.tcp, &seg.payload)?;
+                        if let Err(err) = TCB::write(nic, &seg.ip, &seg.tcp, &seg.payload) {
+                            error!("{err}");
+                        }
+
+                        debug!(
+                            "[{}] ({:?}) segment retransmitted, transmit count: {}",
+                            self.sock, self.state, seg.transmit_count
+                        );
+
+                        true
+                    }
                 } else {
                     // Peer still has time to ACK the segment...
+                    true
                 }
-            }
-
-            // Remove any segments that have been ACKed.
-            for key in key_rm.into_iter() {
-                let _ = self.send_buf.remove_entry(&key);
-            }
+            });
         }
 
         Ok(())
@@ -507,11 +525,13 @@ impl TCB {
         tcph: &TcpHeader,
         payload: &[u8],
     ) -> Result<()> {
+        // TODO: Implement zero-window probing.
+
         // This should never happen, but just in case...
         if let ConnectionState::CLOSED | ConnectionState::LISTEN = self.state {
             return Err(Error::Io(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "connection aborted",
+                io::ErrorKind::ConnectionReset,
+                "connection reset",
             )));
         }
 
@@ -521,13 +541,9 @@ impl TCB {
         let ackn = tcph.ack_number();
 
         if let ConnectionState::SYN_SENT = self.state {
-            // Do not process an incoming FIN since the SEG.SEQ cannot be
-            // validated.
+            // Do not process an incoming FIN since SEG.SEQ cannot be validated.
             if tcph.fin() {
-                warn!(
-                    "[{:?}:{} -> {:?}:{}] (SYN_SENT) received FIN: ignoring",
-                    self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1
-                );
+                debug!("[{}] (SYN_SENT) received FIN: ignoring", self.sock);
                 return Ok(());
             }
 
@@ -535,18 +551,20 @@ impl TCB {
                 // Peer did not correctly ACK our SYN.
                 if ackn <= self.snd.iss || ackn > self.snd.nxt {
                     if tcph.rst() {
-                        return Err(Error::Io(io::Error::other(
-                            "invalid acknowledgment number with RST",
-                        )));
+                        return Err(Error::Io(io::Error::other(format!(
+                            "[{}] (SYN_SENT) invalid ACK number with RST: ignoring",
+                            self.sock
+                        ))));
                     }
+
+                    warn!(
+                        "[{}] (SYN_SENT) connection refused, sending RST: SYN_SENT -> CLOSED",
+                        self.sock
+                    );
 
                     self.state = ConnectionState::CLOSED;
 
                     self.send_rst(nic, ackn, 0)?;
-                    debug!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_SENT) connection reset: SYN_SENT -> CLOSED",
-                        self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
-                    );
 
                     return Err(Error::Io(io::Error::new(
                         io::ErrorKind::ConnectionRefused,
@@ -562,32 +580,23 @@ impl TCB {
                     ackn,
                     self.snd.nxt.wrapping_add(1),
                 ) {
-                    warn!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_SENT) unacceptable ACK number {}: expected ACK number between {} and {} (inclusive of both)",
-                        self.sock.src.0,
-                        self.sock.src.1,
-                        self.sock.dst.0,
-                        self.sock.dst.1,
-                        ackn,
-                        self.snd.una.wrapping_sub(1),
-                        self.snd.nxt.wrapping_add(1),
-                    );
-
-                    return Err(Error::Io(io::Error::other(
-                        "unacceptable acknowledgment number",
-                    )));
+                    return Err(Error::Io(io::Error::other(format!(
+                        "[{}] (SYN_SENT) unacceptable ACK number {}: ignoring",
+                        self.sock, ackn,
+                    ))));
                 }
 
                 if tcph.rst() {
-                    self.state = ConnectionState::CLOSED;
-                    debug!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_SENT) connection reset: SYN_SENT -> CLOSED",
-                        self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                    warn!(
+                        "[{}] (SYN_SENT) received RST, connection refused: SYN_SENT -> CLOSED",
+                        self.sock
                     );
 
+                    self.state = ConnectionState::CLOSED;
+
                     return Err(Error::Io(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        "connection reset",
+                        io::ErrorKind::ConnectionRefused,
+                        "connection refused",
                     )));
                 }
 
@@ -607,14 +616,16 @@ impl TCB {
                     self.snd.wnd = tcph.window();
                     self.peer_mss = tcph.options().mss().unwrap_or(DEFAULT_MSS);
 
+                    // Our SYN was ACKed.
                     self.snd.una = ackn;
-                    self.state = ConnectionState::ESTABLISHED;
 
-                    self.send_ack(nic, &[])?;
                     debug!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_SENT) sent ACK: SYN_SENT -> ESTABLISHED",
-                        self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                        "[{}] (SYN_SENT) received SYN_ACK, sending ACK: SYN_SENT -> ESTABLISHED",
+                        self.sock
                     );
+
+                    self.state = ConnectionState::ESTABLISHED;
+                    self.send_ack(nic, &[])?;
                 }
                 (true, false) => {
                     // Case 2: Only SYN received (send SYN_ACK).
@@ -630,15 +641,15 @@ impl TCB {
                     self.snd.wnd = tcph.window();
                     self.peer_mss = tcph.options().mss().unwrap_or(DEFAULT_MSS);
 
-                    self.state = ConnectionState::SYN_RECEIVED;
-
-                    self.send_syn_ack(nic)?;
                     debug!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_SENT) sent SYN_ACK: SYN_SENT -> SYN_RECEIVED",
-                        self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                        "[{}] (SYN_SENT) received SYN, sending SYN_ACK: SYN_SENT -> SYN_RECEIVED",
+                        self.sock
                     );
 
-                    // Accounting for the SYN.
+                    self.state = ConnectionState::SYN_RECEIVED;
+                    self.send_syn_ack(nic)?;
+
+                    // Accounting for the SYN sent.
                     self.snd.nxt = self.snd.nxt.wrapping_add(1);
                 }
                 (false, true) => {
@@ -647,19 +658,28 @@ impl TCB {
                     // If the ACK number received is valid, we continue to wait
                     // in the SYN_SENT state for a valid segment.
                     validate_ack()?;
+
+                    // Received an ACK for out SYN.
                     self.snd.una = ackn;
                 }
                 (false, false) => {
                     // Case 4: Neither SYN or ACK received (return).
-                    warn!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_SENT) received neither SYN or ACK: ignoring",
-                        self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                    debug!(
+                        "[{}] (SYN_SENT) received neither SYN or ACK: ignoring",
+                        self.sock
                     );
                 }
             }
 
             return Ok(());
         }
+
+        // The number of octets occupied by the data in the segment (counting
+        // SYN and FIN).
+        let seg_len =
+            payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
+
+        let nxt_wnd = self.rcv.nxt.wrapping_add(self.rcv.wnd as u32);
 
         // RFC 793 (3.3):
         //
@@ -680,122 +700,56 @@ impl TCB {
         //      >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
         //                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
         // ```
-
-        // TODO: If the RCV.WND is zero, no segments will be acceptable, but
-        // special allowance should be made to accept valid ACKs, URGs and RSTs.
-
-        // The number of octets occupied by the data in the segment (counting
-        // SYN and FIN).
-        let seg_len =
-            payload.len() as u32 + if tcph.syn() { 1 } else { 0 } + if tcph.fin() { 1 } else { 0 };
-
-        let nxt_wnd = self.rcv.nxt.wrapping_add(self.rcv.wnd as u32);
-
-        match seg_len {
+        let invalid_seg = match seg_len {
             0 => match self.rcv.wnd {
                 0 => {
                     // Case 1: SEG.SEQ = RCV.NXT
-                    if seqn != self.rcv.nxt {
-                        warn!(
-                            "[{:?}:{} -> {:?}:{}] ({:?}) invalid SEQ number {}: expected SEQ number: {}",
-                            self.sock.src.0,
-                            self.sock.src.1,
-                            self.sock.dst.0,
-                            self.sock.dst.1,
-                            self.state,
-                            seqn,
-                            self.rcv.nxt
-                        );
-
-                        if !tcph.rst() {
-                            self.send_ack(nic, &[])?;
-                        }
-
-                        return Ok(());
-                    }
+                    seqn != self.rcv.nxt
                 }
                 _ => {
                     // Case 2: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-                    if !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd) {
-                        warn!(
-                            "[{:?}:{} -> {:?}:{}] ({:?}) invalid SEQ number {}: expected SEQ number between {} and {} (exclusive of {})",
-                            self.sock.src.0,
-                            self.sock.src.1,
-                            self.sock.dst.0,
-                            self.sock.dst.1,
-                            self.state,
-                            seqn,
-                            self.rcv.nxt.wrapping_sub(1),
-                            nxt_wnd,
-                            nxt_wnd
-                        );
-
-                        if !tcph.rst() {
-                            self.send_ack(nic, &[])?;
-                        }
-
-                        return Ok(());
-                    }
+                    !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd)
                 }
             },
             len => match self.rcv.wnd {
                 0 => {
                     // Case 3: not acceptable (we have received bytes when we
                     // are advertising a window size of 0).
-                    warn!(
-                        "[{:?}:{} -> {:?}:{}] ({:?}) received {len} bytes of data from peer with current receive window size: 0",
-                        self.sock.src.0,
-                        self.sock.src.1,
-                        self.sock.dst.0,
-                        self.sock.dst.1,
-                        self.state
-                    );
-
-                    if !tcph.rst() {
-                        self.send_ack(nic, &[])?;
-                    }
-
-                    return Ok(());
+                    //
+                    // If the RCV.WND is zero, no segments will be acceptable, but special
+                    // allowance should be made to accept valid ACKs, URGs and RSTs.
+                    true
                 }
                 _ => {
                     // Case 4: RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
                     //      or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
-                    if !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd)
+                    !is_between_wrapped(self.rcv.nxt.wrapping_sub(1), seqn, nxt_wnd)
                         && !is_between_wrapped(
                             self.rcv.nxt.wrapping_sub(1),
                             seqn.wrapping_add(len - 1),
                             nxt_wnd,
                         )
-                    {
-                        warn!(
-                            "[{:?}:{} -> {:?}:{}] ({:?}) invalid SEQ number {}: expected first or last SEQ number occupied by the segment between {} and {wnd} (exclusive of {wnd})",
-                            self.sock.src.0,
-                            self.sock.src.1,
-                            self.sock.dst.0,
-                            self.sock.dst.1,
-                            self.state,
-                            seqn,
-                            self.rcv.nxt.wrapping_sub(1),
-                            wnd = nxt_wnd,
-                        );
-
-                        if !tcph.rst() {
-                            self.send_ack(nic, &[])?;
-                        }
-
-                        return Ok(());
-                    }
                 }
             },
+        };
+
+        if invalid_seg {
+            debug!(
+                "[{}] ({:?}) received invalid SEQ number {}: ignoring",
+                self.sock, self.state, seqn
+            );
+
+            if !tcph.rst() {
+                self.send_ack(nic, &[])?;
+            }
+
+            return Ok(());
         }
 
         if tcph.rst() {
-            debug!(
-                "[{:?}:{} -> {:?}:{}] ({state:?}) connection reset: {state:?} -> CLOSED",
-                self.sock.src.0,
-                self.sock.src.1,
-                self.sock.dst.0,
-                self.sock.dst.1,
+            warn!(
+                "[{}] ({state:?}) received RST, connection reset: {state:?} -> CLOSED",
+                self.sock,
                 state = self.state,
             );
 
@@ -816,42 +770,22 @@ impl TCB {
                         )));
                     }
                 },
-                ConnectionState::ESTABLISHED
-                | ConnectionState::FIN_WAIT_1
-                | ConnectionState::FIN_WAIT_2
-                | ConnectionState::CLOSE_WAIT => {
-                    // TODO: Any outstanding RECEIVEs and SEND should receive
-                    // "reset" responses. All segment queues should be flushed.
+                _ => {
                     return Err(Error::Io(io::Error::new(
                         io::ErrorKind::ConnectionReset,
                         "connection reset",
                     )));
                 }
-                ConnectionState::CLOSING
-                | ConnectionState::LAST_ACK
-                | ConnectionState::TIME_WAIT
-                | ConnectionState::CLOSED => {
-                    return Err(Error::Io(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        "connection reset",
-                    )));
-                }
-                _ => unreachable!(),
             }
         }
 
         if tcph.syn() {
-            debug!(
-                "[{:?}:{} -> {:?}:{}] ({state:?}) received SYN: {state:?} -> CLOSED",
-                self.sock.src.0,
-                self.sock.src.1,
-                self.sock.dst.0,
-                self.sock.dst.1,
+            warn!(
+                "[{}] ({state:?}) received SYN: {state:?} -> CLOSED",
+                self.sock,
                 state = self.state,
             );
 
-            // TODO: Any outstanding RECEIVEs and SEND should receive "reset"
-            // responses. All segment queues should be flushed.
             self.state = ConnectionState::CLOSED;
 
             if tcph.ack() {
@@ -868,8 +802,8 @@ impl TCB {
 
         if !tcph.ack() {
             debug!(
-                "[{:?}:{} -> {:?}:{}] ({:?}) did not receive ACK",
-                self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1, self.state,
+                "[{}] ({:?}) did not receive ACK: ignoring",
+                self.sock, self.state,
             );
             return Ok(());
         } else {
@@ -881,23 +815,12 @@ impl TCB {
                     self.snd.nxt.wrapping_add(1),
                 ) {
                     warn!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_RECEIVED) unacceptable ACK number {}: expected ACK number between {} and {} (inclusive of both)",
-                        self.sock.src.0,
-                        self.sock.src.1,
-                        self.sock.dst.0,
-                        self.sock.dst.1,
-                        ackn,
-                        self.snd.una.wrapping_sub(1),
-                        self.snd.nxt.wrapping_add(1),
+                        "[{}] (SYN_RECEIVED) received unacceptable ACK number {}, sending RST: SYN_RECEIVED -> CLOSED",
+                        self.sock, ackn,
                     );
 
                     self.state = ConnectionState::CLOSED;
-
                     self.send_rst(nic, ackn, 0)?;
-                    debug!(
-                        "[{:?}:{} -> {:?}:{}] (SYN_RECEIVED) connection reset: SYN_RECEIVED -> CLOSED",
-                        self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
-                    );
 
                     return Err(Error::Io(io::Error::new(
                         io::ErrorKind::ConnectionReset,
@@ -905,11 +828,12 @@ impl TCB {
                     )));
                 }
 
-                self.state = ConnectionState::ESTABLISHED;
                 debug!(
-                    "[{:?}:{} -> {:?}:{}] (SYN_RECEIVED) received valid ACK: SYN_RECEIVED -> ESTABLISHED",
-                    self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                    "[{}] (SYN_RECEIVED) received valid ACK: SYN_RECEIVED -> ESTABLISHED",
+                    self.sock
                 );
+
+                self.state = ConnectionState::ESTABLISHED;
             }
 
             if let ConnectionState::ESTABLISHED
@@ -920,32 +844,24 @@ impl TCB {
             | ConnectionState::LAST_ACK = self.state
             {
                 if ackn < self.snd.una {
-                    warn!(
-                        "[{:?}:{} -> {:?}:{}] ({:?}) received duplicate ACK: {}",
-                        self.sock.src.0,
-                        self.sock.src.1,
-                        self.sock.dst.0,
-                        self.sock.dst.1,
-                        self.state,
-                        ackn
+                    debug!(
+                        "[{}] ({:?}) received duplicate ACK number {}: ignoring",
+                        self.sock, self.state, ackn
                     );
 
                     return Ok(());
                 } else if ackn > self.snd.nxt {
-                    warn!(
-                        "[{:?}:{} -> {:?}:{}] ({:?}) received ACK for untransmitted data: {}",
-                        self.sock.src.0,
-                        self.sock.src.1,
-                        self.sock.dst.0,
-                        self.sock.dst.1,
-                        self.state,
-                        ackn
+                    debug!(
+                        "[{}] ({:?}) received ACK number {} for untransmitted data: sending ACK",
+                        self.sock, self.state, ackn
                     );
 
                     self.send_ack(nic, &[])?;
+
                     return Ok(());
                 } else {
-                    // If SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <- SEG.ACK.
+                    // If SND.UNA < SEG.ACK =< SND.NXT then, set
+                    // SND.UNA <- SEG.ACK.
                     //
                     // If SND.UNA < SEG.ACK =< SND.NXT, the send window should
                     // be updated. If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ
@@ -963,65 +879,58 @@ impl TCB {
                 }
 
                 match self.state {
-                    // Our FIN was acknowledged.
+                    ConnectionState::ESTABLISHED => {}
                     ConnectionState::FIN_WAIT_1 => {
-                        if tcph.fin() {
-                            self.time_wait = Instant::now();
-                            self.state = ConnectionState::TIME_WAIT;
-                            debug!(
-                                "[{:?}:{} -> {:?}:{}] (FIN_WAIT_1) received FIN and FIN was acknowledged: FIN_WAIT_1 -> TIME_WAIT",
-                                self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
-                            );
-                        } else {
-                            self.state = ConnectionState::FIN_WAIT_2;
-                            debug!(
-                                "[{:?}:{} -> {:?}:{}] (FIN_WAIT_1) FIN was acknowledged: FIN_WAIT_1 -> FIN_WAIT_2",
-                                self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
-                            );
-                        }
+                        debug!(
+                            "[{}] (FIN_WAIT_1) received ACK for FIN: FIN_WAIT_1 -> FIN_WAIT_2",
+                            self.sock
+                        );
+
+                        self.state = ConnectionState::FIN_WAIT_2;
                     }
                     ConnectionState::FIN_WAIT_2 => {
-                        // TODO:
+                        // TODO: In addition to the processing for the
+                        // ESTABLISHED state, if the retransmission queue is
+                        // empty, the user's CLOSE can be acknowledged ("ok")
+                        // but do not delete the TCB.
                     }
                     ConnectionState::CLOSE_WAIT => {
-                        // TODO: For now the FIN is immediately sent in response but
-                        // it should instead be triggered by user code. The peer
-                        // indicated they are done sending data, but the user can
-                        // continue to send data.
-                        self.state = ConnectionState::LAST_ACK;
+                        // TODO: For now a FIN is immediately sent in response
+                        // but it should instead be triggered by user code.
                         debug!(
-                            "[{:?}:{} -> {:?}:{}] (CLOSE_WAIT) sent FIN_ACK: CLOSE_WAIT -> LAST_ACK",
-                            self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                            "[{}] (CLOSE_WAIT) sending FIN_ACK: CLOSE_WAIT -> LAST_ACK",
+                            self.sock
                         );
 
+                        self.state = ConnectionState::LAST_ACK;
                         self.send_fin_ack(nic, &[])?;
 
-                        // Account for the FIN.
+                        // Account for the FIN sent.
                         self.snd.nxt = self.snd.nxt.wrapping_add(1);
                     }
-                    // Our FIN was acknowledged.
                     ConnectionState::CLOSING => {
+                        debug!(
+                            "[{}] (CLOSING) received ACK for FIN: CLOSING -> TIME_WAIT",
+                            self.sock
+                        );
+
                         self.time_wait = Instant::now();
                         self.state = ConnectionState::TIME_WAIT;
-                        debug!(
-                            "[{:?}:{} -> {:?}:{}] (CLOSING) FIN was acknowledged: CLOSING -> FIN_WAIT_2",
-                            self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
-                        );
                     }
-                    // Our FIN was acknowledged.
                     ConnectionState::LAST_ACK => {
-                        self.state = ConnectionState::CLOSED;
-                        debug!(
-                            "[{:?}:{} -> {:?}:{}] (LASK_ACK) FIN was acknowledged: LAST_ACK -> CLOSED",
-                            self.sock.src.0, self.sock.src.1, self.sock.dst.0, self.sock.dst.1,
+                        warn!(
+                            "[{}] (LASK_ACK) received ACK for FIN: LAST_ACK -> CLOSED",
+                            self.sock
                         );
+
+                        self.state = ConnectionState::CLOSED;
 
                         return Err(Error::Io(io::Error::new(
                             io::ErrorKind::ConnectionReset,
                             "connection reset",
                         )));
                     }
-                    _ => {}
+                    _ => unreachable!(),
                 }
             }
 
@@ -1032,28 +941,36 @@ impl TCB {
                 if seg_len > 0 {
                     if !payload.is_empty() {
                         match seqn.cmp(&self.rcv.nxt) {
-                            // We received the data we were expecting.
+                            // We received the next bytes we were expecting.
                             Ordering::Equal => {
                                 self.recv_buf.insert(seqn, payload.into());
+
                                 self.rcv.nxt = self.rcv.nxt.wrapping_add(payload.len() as u32);
                                 self.rcv.wnd = self.rcv.wnd.saturating_sub(payload.len() as u16);
                             }
-                            // Received data we were not expecting yet. Buffer
-                            // but keep RCV.NXT the same.
+                            // Received data we were not expecting yet. Data is
+                            // buffered but RCV.NXT is kept the same.
                             Ordering::Greater => {
                                 self.recv_buf.insert(seqn, payload.into());
+
                                 self.rcv.wnd = self.rcv.wnd.saturating_sub(payload.len() as u16);
                             }
                             // Part of the segment overlaps data we have already
                             // received.
                             Ordering::Less => {
-                                // The entire payload is old/duplicate data.
-                                if payload.len() <= (self.rcv.nxt - seqn) as usize {
+                                // Don't need wrapping_sub() since RCV.NXT is
+                                // determined to be greater.
+                                let start = (self.rcv.nxt - seqn) as usize;
+
+                                if payload.len() <= start {
+                                    // Entire payload is old/duplicate data...
                                 } else {
-                                    let payload = &payload[(self.rcv.nxt - seqn) as usize..];
+                                    // Discard old/duplicate portion.
+                                    let payload = &payload[start..];
 
                                     // Keyed by RCV.NXT instead of SEG.SEQ.
                                     self.recv_buf.insert(self.rcv.nxt, payload.into());
+                                    self.rcv.nxt = self.rcv.nxt.wrapping_add(payload.len() as u32);
                                     self.rcv.wnd =
                                         self.rcv.wnd.saturating_sub(payload.len() as u16);
                                 }
@@ -1062,49 +979,56 @@ impl TCB {
                     }
 
                     if tcph.fin() {
+                        // Accounting for the received FIN.
                         self.rcv.nxt = self.rcv.nxt.wrapping_add(1);
 
                         match self.state {
                             ConnectionState::ESTABLISHED => {
-                                self.state = ConnectionState::CLOSE_WAIT;
                                 debug!(
-                                    "[{:?}:{} -> {:?}:{}] (ESTABLISHED) received FIN: ESTABLISHED -> CLOSE_WAIT",
-                                    self.sock.src.0,
-                                    self.sock.src.1,
-                                    self.sock.dst.0,
-                                    self.sock.dst.1,
+                                    "[{}] (ESTABLISHED) received FIN: ESTABLISHED -> CLOSE_WAIT",
+                                    self.sock
                                 );
+
+                                // TODO: stuck here unless user code triggers
+                                // FIN sent to the peer.
+                                self.state = ConnectionState::CLOSE_WAIT;
                             }
                             ConnectionState::FIN_WAIT_1 => {
-                                self.state = ConnectionState::CLOSING;
                                 debug!(
-                                    "[{:?}:{} -> {:?}:{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
-                                    self.sock.src.0,
-                                    self.sock.src.1,
-                                    self.sock.dst.0,
-                                    self.sock.dst.1,
+                                    "[{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
+                                    self.sock
                                 );
+
+                                self.state = ConnectionState::CLOSING;
                             }
                             ConnectionState::FIN_WAIT_2 => {
-                                self.time_wait = Instant::now();
-                                self.state = ConnectionState::TIME_WAIT;
                                 debug!(
-                                    "[{:?}:{} -> {:?}:{}] (FIN_WAIT_2) received FIN: FIN_WAIT_2 -> TIME_WAIT",
-                                    self.sock.src.0,
-                                    self.sock.src.1,
-                                    self.sock.dst.0,
-                                    self.sock.dst.1,
+                                    "[{}] (FIN_WAIT_2) received FIN: FIN_WAIT_2 -> TIME_WAIT",
+                                    self.sock
                                 );
+
+                                // Timer is not set here since we will cascade
+                                // down to the TIME_WAIT code block and set the
+                                // timer as well as acknowledge the FIN.
+                                self.state = ConnectionState::TIME_WAIT;
                             }
                             _ => unreachable!(),
                         }
                     }
 
-                    self.send_ack(nic, &[])?;
+                    if self.state != ConnectionState::TIME_WAIT {
+                        self.send_ack(nic, &[])?;
+                        debug!(
+                            "[{}] ({:?}) received data: sending ACK",
+                            self.sock, self.state,
+                        );
+                    }
                 }
             }
 
             if let ConnectionState::TIME_WAIT = self.state {
+                // TIME-WAIT STATE
+                //
                 // The only thing that can arrive in this state is a
                 // retransmission of the remote FIN. Acknowledge it, and restart
                 // the 2 MSL timeout.
@@ -1121,11 +1045,6 @@ impl TCB {
     /// Returns the current state of the TCP connection.
     pub fn state(&self) -> ConnectionState {
         self.state
-    }
-
-    /// Sets the state of the TCP connection to the connection state provided.
-    pub fn set_state(&mut self, state: ConnectionState) {
-        self.state = state;
     }
 
     /// Returns the current value of the TIME_WAIT timer for the TCP connection.
@@ -1156,12 +1075,10 @@ impl TCB {
         ip.set_header_checksum();
         syn.set_checksum(&ip, &[]);
 
-        // Queue this segment on the send buffer so it can be retransmitted if
-        // needed.
+        // Queue this segment on the retransmission buffer.
         self.send_buf.insert(
             self.snd.una,
             Segment {
-                una: self.snd.una,
                 ip,
                 tcp: syn,
                 payload: Default::default(),
@@ -1187,7 +1104,6 @@ impl TCB {
 
         // Acknowledge the peer's SYN.
         syn_ack.set_ack_number(self.rcv.nxt);
-
         syn_ack.set_syn();
         syn_ack.set_ack();
         syn_ack.set_option_mss(1460)?;
@@ -1203,12 +1119,10 @@ impl TCB {
         ip.set_header_checksum();
         syn_ack.set_checksum(&ip, &[]);
 
-        // Queue this segment on the send buffer so it can be retransmitted if
-        // needed.
+        // Queue this segment on the retransmission buffer.
         self.send_buf.insert(
             self.snd.una,
             Segment {
-                una: self.snd.una,
                 ip,
                 tcp: syn_ack,
                 payload: Default::default(),
@@ -1242,12 +1156,10 @@ impl TCB {
         ack.set_checksum(&ip, payload);
 
         if !payload.is_empty() {
-            // Queue this segment on the send buffer so it can be retransmitted if
-            // needed.
+            // Queue this segment on the retransmission buffer.
             self.send_buf.insert(
                 self.snd.una,
                 Segment {
-                    una: self.snd.una,
                     ip,
                     tcp: ack,
                     payload: payload.into(),
@@ -1283,12 +1195,10 @@ impl TCB {
         ip.set_header_checksum();
         fin_ack.set_checksum(&ip, payload);
 
-        // Queue this segment on the send buffer so it can be retransmitted if
-        // needed.
+        // Queue this segment on the retransmission buffer.
         self.send_buf.insert(
             self.snd.una,
             Segment {
-                una: self.snd.una,
                 ip,
                 tcp: fin_ack,
                 payload: payload.into(),
@@ -1311,10 +1221,10 @@ impl TCB {
     fn send_rst(&self, nic: &mut Tun, seq: u32, ack: u32) -> Result<()> {
         let mut rst = TcpHeader::new(self.sock.src.1, self.sock.dst.1, seq, 0);
 
-        rst.set_ack_number(ack);
         rst.set_rst();
 
         if ack != 0 {
+            rst.set_ack_number(ack);
             rst.set_ack();
         }
 
@@ -1359,7 +1269,6 @@ impl TCB {
 }
 
 /// Logs the details of an incoming TCP segment.
-#[inline]
 fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     debug!(
         "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",

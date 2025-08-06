@@ -12,7 +12,7 @@ cargo b --release
 # `p` (permitted) adds the capability to the permitted set.
 # `e` (effective) makes the capability active when the process starts.
 sudo setcap CAP_NET_ADMIN=ep target/release/tcp
-target/release/tcp &
+target/release/tcp < /dev/tty &
 pid=$!
 
 # Sets up a point-to-point connection between 10.0.0.1 and 10.0.0.2. The /32 

@@ -1,6 +1,6 @@
 use std::{error, fmt, io, result};
 
-/// Constructs a [crate::Error::Io], prefixing a custom message to the current
+/// Creates a [`crate::Error::Io`] with a custom message prefixed to the current
 /// `errno` value.
 macro_rules! errno {
     ($($arg:tt)+) => {{
@@ -67,7 +67,6 @@ pub enum ParseError {
         /// The minimum required length for the header.
         minimum: u16,
     },
-
     /// The Invalid IPv4 version value.
     InvalidVersion {
         /// The version value provided.
@@ -93,7 +92,6 @@ pub enum ParseError {
     },
     /// Invalid protocol number (not defined in RFC 1700).
     InvalidProtocol(u8),
-
     /// Invalid TCP data offset value.
     InvalidDataOffset {
         /// The data offset value provided.
@@ -196,7 +194,6 @@ pub enum HeaderError {
         /// The maximum allowed IPv4 payload length.
         maximum: u16,
     },
-
     /// Not enough space to append the TCP option to the current TCP options.
     InsufficientOptionSpace {
         /// The length of the TCP option being appended.

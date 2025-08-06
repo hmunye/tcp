@@ -1,13 +1,11 @@
 use std::collections::{HashMap, hash_map::Entry};
-use std::{mem, ptr};
+use std::time::Duration;
+use std::{io, mem, ptr};
 
-// TODO: Use the connection errors returned to determine whether to remove the
-// connection from the hash map.
-
-use crate::Result;
 use crate::net::{ConnectionState, Ipv4Header, MSL, Protocol, RTO, Socket, TCB, TcpHeader};
 use crate::tun_tap::{self, MTU_SIZE};
-use crate::{debug, errno, error, warn};
+use crate::{Error, Result};
+use crate::{debug, errno, error, info, warn};
 
 /// Total number of events returned each tick (event loop cycle).
 const EPOLL_MAX_EVENTS: i32 = 3;
@@ -30,7 +28,6 @@ const EPOLL_TIMEOUT_MS: i32 = -1;
 /// Returns an error if the event loop could not be successfully initialized.
 pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB>) -> Result<()> {
     let mut ev = libc::epoll_event { events: 0, u64: 0 };
-
     // Array of events for ready file descriptors.
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; EPOLL_MAX_EVENTS as usize];
 
@@ -60,7 +57,7 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
             return Err(errno!("failed to block signals on signal set"));
         }
 
-        signal_fd = libc::signalfd(-1, &raw const mask, 0);
+        signal_fd = libc::signalfd(-1, &raw const mask, libc::SFD_NONBLOCK);
         if signal_fd == -1 {
             return Err(errno!("failed to create signal_fd"));
         }
@@ -108,8 +105,8 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
 
         ev.events = libc::EPOLLIN as u32;
         ev.u64 = signal_fd as u64;
-        // Also add the signal file descriptors to be notified on SIGINT or
-        // SIGTERM.
+        // Add the signal file descriptor to the epoll interest list to be
+        // notified on SIGINT or SIGTERM signals.
         if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, signal_fd, &raw mut ev) == -1 {
             libc::close(signal_fd);
             libc::close(timer_fd);
@@ -120,7 +117,7 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
 
         ev.events = libc::EPOLLIN as u32;
         ev.u64 = timer_fd as u64;
-        // Timer that signals when retransmission queue should be checked.
+        // Also add the timer file descriptor to be notified on expiration.
         if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, timer_fd, &raw mut ev) == -1 {
             libc::close(signal_fd);
             libc::close(timer_fd);
@@ -131,8 +128,8 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
 
         ev.events = libc::EPOLLIN as u32;
         ev.u64 = tun_fd as u64;
-        // Add the TUN's file descriptor to the epoll interest list to be
-        // notified when it becomes ready for reading (e.g., incoming IP frame).
+        // Also the TUN file descriptor to be notified when it becomes ready for
+        // reading (e.g., incoming IP frame).
         if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, tun_fd, &raw mut ev) == -1 {
             libc::close(signal_fd);
             libc::close(timer_fd);
@@ -164,6 +161,7 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
             for event in events.iter().take(rdfs as usize) {
                 // A signal was caught (SIGINT or SIGTERM).
                 if event.u64 == signal_fd as u64 {
+                    // TODO: Find out what to do on SIGINT or SIGTERM.
                     debug!("signal caught");
 
                     libc::close(signal_fd);
@@ -173,35 +171,46 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
                     break 'event_loop;
                 }
 
-                // Timer went off.
+                // Timer expired.
                 if event.u64 == timer_fd as u64 {
                     // Read from the timer to clear the expiration count and
                     // prevent event overflow.
                     let mut buf = [0u8; 8];
-
                     let _ = libc::read(timer_fd, &raw mut buf as *mut libc::c_void, buf.len());
 
-                    // Iterate over all active connection to check whether
-                    // retransmissions are necessary.
-                    for (_socket, conn) in connections.iter_mut() {
-                        match conn.state() {
-                            ConnectionState::CLOSED | ConnectionState::LISTEN => {}
-                            ConnectionState::TIME_WAIT => {
-                                // The timer has expired
-                                if conn.time_wait().elapsed()
-                                    >= std::time::Duration::from_secs(MSL * 2)
-                                {
-                                    // TODO: Connection needs to be cleaned up.
-                                    conn.set_state(ConnectionState::CLOSED);
-                                }
-                            }
-                            _ => {
-                                if let Err(err) = conn.on_conn_tick(nic) {
-                                    error!("{err}");
-                                }
+                    // Remove connections that are ready to be closed or
+                    // aborted.
+                    connections.retain(|socket, conn| match conn.state() {
+                        ConnectionState::TIME_WAIT => {
+                            if conn.time_wait().elapsed() >= Duration::from_secs(MSL * 2) {
+                                warn!("[{}] TIME_WAIT timer expired", socket);
+                                false
+                            } else {
+                                true
                             }
                         }
-                    }
+                        _ => {
+                            // If the maximum number of retransmissions is
+                            // reached, the connections state transitions to
+                            // CLOSED.
+                            let _ = conn.on_conn_tick(nic);
+                            // conn.state() != ConnectionState::CLOSED
+
+                            if conn.state() == ConnectionState::CLOSED {
+                                let mut data = String::new();
+
+                                for (_, v) in conn.recv_buf.iter() {
+                                    data.push_str(std::str::from_utf8(v).unwrap());
+                                }
+
+                                info!("[{}] data received during connection: {}", socket, data);
+
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                    });
 
                     // Ensure the timer is re-armed.
                     let time_spec = libc::itimerspec {
@@ -228,7 +237,7 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
                     }
                 }
 
-                // The TUN interface is ready for I/O.
+                // Received an IP frame.
                 if event.u64 == tun_fd as u64 {
                     let nbytes = match nic.recv(&mut buf[..]) {
                         Ok(bytes) => bytes,
@@ -240,6 +249,11 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
 
                     match Ipv4Header::try_from(&buf[..nbytes]) {
                         Ok(iph) if iph.protocol() == Protocol::TCP => {
+                            if !iph.is_valid_checksum() {
+                                warn!("invalid checksum for IPv4 header");
+                                break;
+                            }
+
                             let src = iph.src();
                             let dst = iph.dst();
 
@@ -250,10 +264,16 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
                                     let payload =
                                         &buf[iph.header_len() + tcph.header_len()..nbytes];
 
-                                    // Packets are from the peer's perspective, so src/dst
-                                    // are flipped. Reverse them to match the format used
-                                    // when initiating connections, ensuring consistent
-                                    // socket lookup in the connection hash map.
+                                    if !tcph.is_valid_checksum(&iph, payload) {
+                                        warn!("invalid checksum for TCP header");
+                                        break;
+                                    }
+
+                                    // Packets are from the peer's perspective,
+                                    // so src/dst are flipped. Reverse them to
+                                    // match the format used when initiating
+                                    // connections, ensuring consistent socket
+                                    // lookup in the connection hash map.
                                     let socket = Socket {
                                         src: (dst, dst_port),
                                         dst: (src, src_port),
@@ -275,24 +295,44 @@ pub fn packet_loop(nic: &mut tun_tap::Tun, connections: &mut HashMap<Socket, TCB
                                             }
                                         }
                                         Entry::Occupied(mut conn) => {
-                                            conn.get_mut()
-                                    .on_conn_packet(nic, &iph, &tcph, payload)
-                                    .unwrap_or_else(|err| {
-                                        error!("failed to process incoming TCP segment: {err}");
-                                    });
+                                            if let Err(Error::Io(err)) = conn
+                                                .get_mut()
+                                                .on_conn_packet(nic, &iph, &tcph, payload)
+                                            {
+                                                match err.kind() {
+                                                    io::ErrorKind::ConnectionReset
+                                                    | io::ErrorKind::ConnectionRefused => {
+                                                        let mut data = String::new();
+
+                                                        for (_, v) in conn.get().recv_buf.iter() {
+                                                            data.push_str(
+                                                                std::str::from_utf8(v).unwrap(),
+                                                            );
+                                                        }
+
+                                                        info!(
+                                                            "[{}] data received during connection: {}",
+                                                            &socket, data
+                                                        );
+
+                                                        connections.remove(&socket);
+                                                    }
+                                                    _ => error!("{err}"),
+                                                }
+                                            }
                                         }
                                     }
                                 }
                                 Err(err) => {
-                                    error!("{err}");
+                                    error!("could not parse TCP header: {err}");
                                 }
                             }
                         }
                         Ok(p) => {
-                            warn!("ignoring non-TCP ({:?}) packet", p.protocol());
+                            debug!("ignoring non-TCP ({:?}) packet", p.protocol());
                         }
                         Err(err) => {
-                            error!("{err}");
+                            error!("could not parse IPv4 header: {err}");
                         }
                     }
                 }

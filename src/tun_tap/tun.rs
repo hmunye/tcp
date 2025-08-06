@@ -6,9 +6,8 @@ use std::{mem, ptr};
 
 use crate::{Error, Result, errno};
 
-/// The Maximum Transmission Unit (MTU) for the TUN interface. Does NOT account
-/// for leading packet information bytes if configured.
-pub const MTU_SIZE: usize = 1500;
+/// The Maximum Transmission Unit (MTU) for the TUN interface.
+pub const MTU_SIZE: usize = 1504;
 
 /// Represents a TUN (network TUNnel) interface, a virtual network device that
 /// acts as a software loopback for transferring IP packets between user space
