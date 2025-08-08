@@ -13,12 +13,12 @@ raw packet I/O over a TUN interface.
 
 ## TOC
 
-* [Features](#-Features)
-* [Testing](#-Testing)
-    * [Example Test: Out-of-Order Payload Handling](#Example-Test:-Out-of-Order-Payload-Handling)
-* [What's Not Included](#-What's-Not-Included)
-* [Quick Start](#-Quick-Start)
-* [References](#-References)
+* [Features](#features)
+* [Testing](#testing)
+    * [Example Test: Out-of-Order Payload Handling](#example-test-out-of-order-payload-handling)
+* [What's Not Included](#whats-not-included)
+* [Quick Start](#quick-start)
+* [References](#references)
 
 ## Features
 
