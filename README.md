@@ -57,6 +57,8 @@ cargo t
 
 ### Example Test: Out-of-Order Payload Handling
 
+This test verifies that payloads from out-of-order segments are properly managed and reassembled in-order.
+
 To ensure that RST segments are blocked before reaching the TUN interface and do not interfere with the test, 
 use the following `iptables` rule:
 
