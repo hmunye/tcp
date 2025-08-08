@@ -1,12 +1,8 @@
-//! Networking primitives for TCP communication.
+//! Networking primitives for TCP over IPv4.
 //!
-//! This module provides networking functionality for the Transmission Control
-//! Protocol over IPv4. It includes core components such as TCP and IPv4 header
-//! definitions, protocol state management, and utilities for constructing and
-//! parsing TCP packets.
+//! This module implements core components for the Transmission Control Protocol
+//! (TCP) over IPv4, including TCP and IPv4 header definitions, protocol state
+//! management, and event loop for packet I/O.
 
-mod headers;
-mod protocol;
-
-pub use headers::*;
-pub use protocol::*;
+pub mod headers;
+pub mod protocol;

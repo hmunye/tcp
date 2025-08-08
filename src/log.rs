@@ -1,21 +1,9 @@
-//! Simple internal logger for emitting severity-based messages.
+//! A simple logging utility for emitting messages based on severity levels.
 
 use std::time;
 
+/// Source of the log message.
 const SOURCE: &str = "tcp";
-
-/// Represents the severity level of a log message.
-#[derive(Debug)]
-pub enum Level {
-    /// Designates very serious errors.
-    Error,
-    /// Designates hazardous situations.
-    Warn,
-    /// Designates useful information.
-    Info,
-    /// Designates lower priority information.
-    Debug,
-}
 
 /// Logs a message at the [Level::Error] level.
 #[macro_export]
@@ -49,10 +37,26 @@ macro_rules! debug {
     }};
 }
 
-/// Logs a message with the given severity level.
+/// Severity levels for log messages.
+#[derive(Debug)]
+pub enum Level {
+    /// Designates very serious errors.
+    Error,
+    /// Designates hazardous situations.
+    Warn,
+    /// Designates useful information.
+    Info,
+    /// Designates lower priority information.
+    Debug,
+}
+
+/// Logs a message with the specified severity level.
 ///
-/// - Messages with [Level::Info] and [Level::Debug] are printed to stdout.
-/// - Messages with [Level::Warn] and [Level::Error] are printed to stderr.
+/// - [Level::Info] and [Level::Debug] messages are printed to `stdout`.
+/// - [Level::Warn] and [Level::Error] messages are printed to `stderr`.
+///
+/// The log message will include a timestamp, severity level, and the source of
+/// the log (`tcp`).
 pub fn log(level: Level, msg: impl std::fmt::Display) {
     let now = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)

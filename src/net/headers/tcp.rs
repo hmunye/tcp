@@ -1,9 +1,9 @@
 use std::io;
 
-use crate::net::Ipv4Header;
+use super::Ipv4Header;
 use crate::{Error, HeaderError, ParseError};
 
-/// Representation of a TCP segment header (RFC 793 3.1).
+/// TCP segment header (RFC 793 3.1).
 ///
 /// ```text
 ///   0                   1                   2                   3
@@ -184,6 +184,8 @@ impl TcpHeader {
     }
 
     /// Returns the Data Offset field from the TCP header.
+    ///
+    /// To get the header length in bytes, use [TcpHeader::header_len].
     pub fn data_offset(&self) -> u8 {
         // Stored in the higher 4 bits.
         (self.offset_and_control_bits >> 12) as u8
@@ -275,8 +277,8 @@ impl TcpHeader {
         self.checksum
     }
 
-    /// Computes and sets the Checksum field of the TCP header with the provided
-    /// IPv4 header and payload.
+    /// Computes and updates the Checksum field of the TCP header with the
+    /// provided IPv4 header and payload.
     pub fn set_checksum(&mut self, ip_header: &Ipv4Header, payload: &[u8]) {
         self.checksum = self.compute_checksum(ip_header, payload);
     }
@@ -335,8 +337,6 @@ impl TcpHeader {
     /// and payload. For purposes of computing the checksum, the value of the
     /// checksum field is zero.
     pub fn compute_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> u16 {
-        // RFC 793 (3.1):
-        //
         // ```text
         //        +--------+--------+--------+--------+
         //        |           Source Address          |
@@ -417,6 +417,7 @@ impl TcpHeader {
 
     /// Returns the memory representation of the TCP header as a byte array in
     /// big-endian (network) byte order and the number of bytes written.
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_be_bytes(&self) -> ([u8; Self::MAX_HEADER_LEN as usize], usize) {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
         let size = self.header_len();
@@ -436,11 +437,6 @@ impl TcpHeader {
     }
 
     /// Reads a TCP header from the given input stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading from the input stream fails or if parsing
-    /// the TCP header fails.
     pub fn read<T: io::Read>(input: &mut T) -> crate::Result<Self> {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
         let nbytes = input.read(&mut raw_header[..])?;
@@ -450,14 +446,8 @@ impl TcpHeader {
 
     /// Writes the TCP header to the given output stream.
     ///
-    /// # Notes
-    ///
-    /// Checksum is NOT automatically computed. It is the callers responsibility
-    /// to ensure the checksum is computed before writing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if writing to the output stream fails.
+    /// Checksum is NOT automatically computed. The callers must ensure the
+    /// checksum is computed and updated before writing.
     pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
         let (raw_header, nbytes) = self.to_be_bytes();
         output.write_all(&raw_header[..nbytes])?;
@@ -473,7 +463,7 @@ impl TryFrom<&[u8]> for TcpHeader {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
             return Err(Error::Parse(ParseError::InvalidBufferLength {
                 provided: header_raw.len(),
-                minimum: Self::MIN_HEADER_LEN,
+                min: Self::MIN_HEADER_LEN,
             }));
         }
 
@@ -483,7 +473,16 @@ impl TryFrom<&[u8]> for TcpHeader {
         if data_offset < Self::MIN_DATA_OFFSET {
             return Err(Error::Parse(ParseError::InvalidDataOffset {
                 provided: data_offset,
-                minimum: Self::MIN_DATA_OFFSET,
+                min: Self::MIN_DATA_OFFSET,
+                max: Self::MAX_DATA_OFFSET,
+            }));
+        }
+
+        if data_offset > Self::MAX_DATA_OFFSET {
+            return Err(Error::Parse(ParseError::InvalidDataOffset {
+                provided: data_offset,
+                min: Self::MIN_DATA_OFFSET,
+                max: Self::MAX_DATA_OFFSET,
             }));
         }
 
@@ -491,7 +490,7 @@ impl TryFrom<&[u8]> for TcpHeader {
         if (data_offset << 2) > header_raw.len() as u16 {
             return Err(Error::Parse(ParseError::HeaderLengthMismatch {
                 provided: header_raw.len(),
-                actual: data_offset << 2,
+                expected: data_offset << 2,
             }));
         }
 
@@ -523,12 +522,12 @@ impl TryFrom<&[u8]> for TcpHeader {
                     if ((data_offset - Self::MIN_DATA_OFFSET) << 2) as usize != rest_len {
                         return Err(Error::Parse(ParseError::OptionsLengthMismatch {
                             provided: rest_len,
-                            actual: ((data_offset - Self::MIN_DATA_OFFSET) << 2),
+                            expected: ((data_offset - Self::MIN_DATA_OFFSET) << 2),
                         }));
                     }
 
-                    // Limit range so payload bytes are not accidentally read as
-                    // options.
+                    // Limit range to data offset so payload bytes are not
+                    // accidentally read as options.
                     TcpOptions::try_from(&header_raw[20..(data_offset << 2) as usize])?
                 } else {
                     TcpOptions::new()
@@ -565,7 +564,7 @@ impl Default for TcpHeader {
     }
 }
 
-/// Representation of a TCP Options field in a TCP header.
+/// Options within TCP header.
 #[derive(Debug, Clone, Copy)]
 pub struct TcpOptions {
     len: usize,
@@ -574,7 +573,7 @@ pub struct TcpOptions {
 
 impl TcpOptions {
     /// Maximum length of TCP options in bytes.
-    pub const MAX_OPTIONS_LEN: u16 = 40;
+    pub const MAX_OPTIONS_LEN: usize = 40;
 
     /// Creates a new empty TCP options.
     pub fn new() -> Self {
@@ -638,18 +637,19 @@ impl TcpOptions {
         if self.mss().is_some() {
             // Skip setting MSS option is it already exists...
         } else {
-            const MSS_LEN: usize = 4;
-
             if mss == 0 {
                 return Err(Error::Header(HeaderError::InvalidMssOption(mss)));
             }
 
+            const MSS_LEN: usize = 4;
+
             let opts_len = self.len();
 
-            if (opts_len + MSS_LEN) as u16 > Self::MAX_OPTIONS_LEN {
+            if opts_len + MSS_LEN > Self::MAX_OPTIONS_LEN {
                 return Err(Error::Header(HeaderError::InsufficientOptionSpace {
                     attempted: (opts_len + MSS_LEN),
-                    maximum: Self::MAX_OPTIONS_LEN,
+                    current: opts_len,
+                    max: Self::MAX_OPTIONS_LEN,
                 }));
             }
 
@@ -675,7 +675,7 @@ impl TcpOptions {
     pub fn as_slice(&self) -> &[u8] {
         debug_assert!(self.len <= 40);
 
-        // SAFETY: Verified that self.len is less then 40 bytes.
+        // SAFETY: self.len <= 40 bytes.
         unsafe { std::slice::from_raw_parts(self.buf.as_ptr(), self.len) }
     }
 }
@@ -684,24 +684,25 @@ impl TryFrom<&[u8]> for TcpOptions {
     type Error = Error;
 
     fn try_from(opts_slice: &[u8]) -> Result<Self, Self::Error> {
-        if opts_slice.len() > Self::MAX_OPTIONS_LEN as usize {
+        if opts_slice.len() > Self::MAX_OPTIONS_LEN {
             return Err(Error::Parse(ParseError::InvalidOptionsLength {
                 provided: opts_slice.len(),
-                maximum: Self::MAX_OPTIONS_LEN,
+                max: Self::MAX_OPTIONS_LEN,
             }));
         }
 
         let len = opts_slice.len();
 
-        // Ensure options present are aligned to a 4-byte boundary, adding
-        // padding if necessary.
+        // Ensure that the options are aligned to a 4-byte boundary by adding
+        // padding if necessary. A length that is a multiple of 4 will always
+        // have the last two bits set to 0.
         let padding = if len & 0b11 != 0 { 4 } else { 0 };
 
         Ok(Self {
             // Truncate len to the nearest multiple of 4 before adding padding.
             len: ((len >> 2) << 2) + padding,
             buf: {
-                let mut buf = [0; 40];
+                let mut buf = [0; Self::MAX_OPTIONS_LEN];
                 buf[..len].copy_from_slice(opts_slice);
                 buf
             },
@@ -715,7 +716,7 @@ impl Default for TcpOptions {
     }
 }
 
-/// Represents the kinds of TCP options.
+/// Kinds of TCP options (RFC 793 3.1).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
@@ -774,6 +775,7 @@ impl From<u8> for OptionKind {
         match val {
             1 => Self::NOP,
             2 => Self::MSS,
+            // Everything else is considered the end of the options list.
             _ => Self::EOL,
         }
     }
@@ -887,7 +889,7 @@ mod tests {
             [192, 168, 0, 44],
             header.header_len() as u16,
             64,
-            crate::net::Protocol::TCP,
+            crate::net::headers::Protocol::TCP,
         )
         .unwrap();
 

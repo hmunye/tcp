@@ -2,7 +2,7 @@ use std::io;
 
 use crate::{Error, HeaderError, ParseError};
 
-/// Representation of an IPv4 datagram header (RFC 791 3.1).
+/// IPv4 datagram header (RFC 791 3.1).
 ///
 /// ```text
 ///   0                   1                   2                   3
@@ -22,7 +22,7 @@ use crate::{Error, HeaderError, ParseError};
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
 ///
-/// This implementation omits options (IHL should always be 5).
+/// IPv4 options currently are unsupported.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ipv4Header {
@@ -103,9 +103,9 @@ pub struct Ipv4Header {
     /// This field indicates the next level protocol used in the data portion of
     /// the internet datagram.
     protocol: Protocol,
-    /// A checksum on the header only. Since some header fields change
-    /// (e.g., time to live), this is recomputed and verified at each point that
-    /// the internet header is processed.
+    /// A checksum on the header only. Since some header fields change (e.g.,
+    /// time to live), this is recomputed and verified at each point that the
+    /// internet header is processed.
     header_checksum: u16,
     /// The source address.
     src_addr: [u8; 4],
@@ -156,7 +156,7 @@ impl Ipv4Header {
         if payload_len > Self::MAX_PAYLOAD_LEN {
             return Err(Error::Header(HeaderError::PayloadTooLarge {
                 provided: payload_len,
-                maximum: Self::MAX_PAYLOAD_LEN,
+                max: Self::MAX_PAYLOAD_LEN,
             }));
         }
 
@@ -176,9 +176,10 @@ impl Ipv4Header {
         self.version_ihl >> 4
     }
 
-    /// Returns the IHL (Internet Header Length) field from the IPv4 header.
+    /// Returns the IHL (Internet Header Length) field from the IPv4 header,
+    /// specified 32-bit (4-byte) units.
     ///
-    /// The IHL specifies the header length in 32-bit (4-byte) units.
+    /// To get the header length in bytes, use [Ipv4Header::header_len].
     pub fn ihl(&self) -> u8 {
         // Stored in the lower 4 bits.
         self.version_ihl & 0xF
@@ -232,7 +233,7 @@ impl Ipv4Header {
         self.header_checksum
     }
 
-    /// Computes and sets the Header Checksum field for the IPv4 header.
+    /// Computes and updates the Header Checksum field for the IPv4 header.
     pub fn set_header_checksum(&mut self) {
         self.header_checksum = self.compute_header_checksum();
     }
@@ -252,14 +253,14 @@ impl Ipv4Header {
         self.dst_addr
     }
 
-    /// Returns the length of the IPv4 header, not including payload.
+    /// Returns the length of the IPv4 header in bytes, not including payload.
     pub fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN as usize
     }
 
     /// Returns the payload length of the IPv4 header.
     pub fn payload_len(&self) -> u16 {
-        // SAFETY: Total Length >= IHL << 2 (20 bytes) is checked when parsing.
+        // SAFETY: total_len >= IHL << 2 is checked when parsing.
         self.total_len - Self::MIN_HEADER_LEN
     }
 
@@ -273,7 +274,7 @@ impl Ipv4Header {
         if payload_len > Self::MAX_PAYLOAD_LEN {
             return Err(Error::Header(HeaderError::PayloadTooLarge {
                 provided: payload_len,
-                maximum: Self::MAX_PAYLOAD_LEN,
+                max: Self::MAX_PAYLOAD_LEN,
             }));
         }
 
@@ -321,6 +322,7 @@ impl Ipv4Header {
 
     /// Returns the memory representation of the IPv4 header as a byte array in
     /// big-endian (network) byte order.
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_be_bytes(&self) -> [u8; Self::MIN_HEADER_LEN as usize] {
         let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
 
@@ -339,11 +341,6 @@ impl Ipv4Header {
     }
 
     /// Reads an IPv4 header from the given input stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading from the input stream fails or if parsing
-    /// the IPv4 header fails.
     pub fn read<T: io::Read>(input: &mut T) -> crate::Result<Self> {
         let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
         input.read_exact(&mut raw_header[..])?;
@@ -353,14 +350,8 @@ impl Ipv4Header {
 
     /// Writes the IPv4 header to the given output stream.
     ///
-    /// # Notes
-    ///
-    /// Checksum is NOT automatically computed. It is the callers responsibility
-    /// to ensure the checksum is computed before writing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if writing to the output stream fails.
+    /// Checksum is NOT automatically computed. The callers must ensure the
+    /// checksum is computed and updated before writing.
     pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
         output.write_all(&self.to_be_bytes())?;
 
@@ -375,7 +366,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
         if header_raw.len() < Self::MIN_HEADER_LEN as usize {
             return Err(Error::Parse(ParseError::InvalidBufferLength {
                 provided: header_raw.len(),
-                minimum: Self::MIN_HEADER_LEN,
+                min: Self::MIN_HEADER_LEN,
             }));
         }
 
@@ -404,7 +395,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
                 if total_len < ((version_ihl & 0xF) << 2) as u16 {
                     return Err(Error::Parse(ParseError::InvalidTotalLength {
                         provided: total_len,
-                        actual: ((version_ihl & 0xF) << 2),
+                        expected: ((version_ihl & 0xF) << 2),
                     }));
                 }
 
@@ -436,7 +427,7 @@ impl Default for Ipv4Header {
         Self {
             // Version = 4
             // IHL = 5
-            version_ihl: 0b01000101,
+            version_ihl: 0b0100_0101,
             tos: 0,
             id: 0,
             // Bit 0 = 0 (Reserved)
@@ -460,6 +451,7 @@ impl Default for Ipv4Header {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum Protocol {
     /// Internet Control Message
     ICMP = 1,

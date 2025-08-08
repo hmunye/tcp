@@ -5,5 +5,4 @@
 //! program and instead of sending packets via physical media writes them to the
 //! user space program.
 
-mod tun;
-pub use tun::{MTU_SIZE, Tun};
+pub mod tun;

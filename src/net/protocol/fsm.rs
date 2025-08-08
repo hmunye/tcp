@@ -1,18 +1,22 @@
+//! TCP Finite State Machine (FSM), as specified in [RFC 793].
+//!
+//! [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
+
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::fmt;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
+use std::{fmt, mem};
 
 use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
-use crate::tun_tap::{MTU_SIZE, Tun};
+use crate::tun_tap::tun::{MTU_SIZE, Tun};
 use crate::{Error, Result};
 use crate::{debug, error, warn};
 
-/// Retransmission Timeout (RTO) in seconds.
+/// Retransmission Timeout (`RTO`) in seconds.
 pub const RTO: u64 = 1;
 
-/// Maximum Segment Lifetime (MSL) in seconds.
+/// Maximum Segment Lifetime (`MSL`) in seconds.
 ///
 /// The MSL represents the maximum time a segment can exist within the network
 /// before being discarded.
@@ -20,7 +24,7 @@ pub const MSL: u64 = 60;
 
 /// The maximum number of retransmission attempts for a segment before giving up
 /// on the connection.
-const MAX_RETRANSMIT_ATTEMPTS: usize = 5;
+pub const MAX_RETRANSMIT_ATTEMPTS: usize = 5;
 
 /// RFC 1122 (4.2.2.6):
 ///
@@ -31,85 +35,96 @@ const DEFAULT_MSS: u16 = 536;
 /// Our window size advertised to the peer.
 const RCV_WND_SIZE: u16 = 4096;
 
-/// Represents a unique TCP connection.
+/// An IPv4 address and a port number.
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub struct Socket {
-    /// Source address and port.
-    pub(crate) src: ([u8; 4], u16),
-    /// Destination address and port.
-    pub(crate) dst: ([u8; 4], u16),
+pub struct SocketAddr {
+    /// IPv4 address.
+    pub addr: [u8; 4],
+    /// Port number.
+    pub port: u16,
 }
 
-impl fmt::Display for Socket {
+impl fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}.{}.{}.{}:{} -> {}.{}.{}.{}:{}",
-            self.src.0[0],
-            self.src.0[1],
-            self.src.0[2],
-            self.src.0[3],
-            self.src.1,
-            self.dst.0[0],
-            self.dst.0[1],
-            self.dst.0[2],
-            self.dst.0[3],
-            self.dst.1,
+            "{}.{}.{}.{}:{}",
+            self.addr[0], self.addr[1], self.addr[2], self.addr[3], self.port,
         )
     }
 }
 
-/// Represents a fully constructed TCP segment queued for retransmission.
+/// Unique TCP connection, identified by both the source and destination
+/// socket addresses.
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct Socket {
+    /// The source socket address (local IP and port).
+    pub src: SocketAddr,
+    /// The destination socket address (remote IP and port).
+    pub dst: SocketAddr,
+}
+
+impl fmt::Display for Socket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} -> {}", self.src, self.dst)
+    }
+}
+
+/// Fully constructed TCP segment queued for retransmission.
 #[derive(Debug)]
 struct Segment {
-    /// The IPv4 header of the segment.
+    /// IPv4 header of the segment.
     ip: Ipv4Header,
-    /// The TCP header of the segment.
+    /// TCP header of the segment.
     tcp: TcpHeader,
-    /// The data payload of the segment.
+    /// Data payload of the segment.
     payload: Vec<u8>,
-    /// The timer used in determining whether the segment should be
-    /// retransmitted.
+    /// Timer used in determining whether the segment should be retransmitted.
     timer: Instant,
-    /// The amount of times this segment has been retransmitted. Used to apply
+    /// The number of times the segment has been retransmitted. Used to apply
     /// exponential backoff and determine when to give up on the connection.
     transmit_count: usize,
 }
 
-/// Represents the Transmission Control Block (TCB), which stores information
-/// about the state and control data for managing a TCP connection.
+/// Transmission Control Block (TCB).
 #[derive(Debug)]
+#[allow(clippy::upper_case_acronyms)]
 pub struct TCB {
     /// Current state of the TCP connection.
-    state: ConnectionState,
-    /// Connection details of the host and remote TCPs.
+    pub state: ConnectionState,
+    /// Socket addresses of the host and remote TCPs.
     sock: Socket,
     /// Send Sequence Space for the TCP connection.
     snd: SendSeqSpace,
     /// Receive Sequence Space for the TCP connection.
     rcv: RecvSeqSpace,
-    /// Buffer to store data received from peer.
+    /// Buffer to store in-order data received from peer.
     ///
-    /// Using a BTreeMap so out of order segments can be retrieved in-order by
-    /// sequence number.
-    pub(crate) recv_buf: BTreeMap<u32, Vec<u8>>,
+    /// Stored separately so user buffer can easily be transmitted to user.
+    pub usr_buf: VecDeque<u8>,
+    /// Buffer to store out-of-order data received from peer.
+    ///
+    /// BTreeMap used so out of order segments can be retrieved in-order by
+    /// sequence number when merging with `usr_buf`.
+    rcv_buf: BTreeMap<u32, Vec<u8>>,
     /// Buffer to store acknowledgeable segments sent to the peer.
     ///
-    /// Any segments in this buffer which have been unACKed will be
+    /// Any segments in this buffer which have been unacknowledged will be
     /// retransmitted based on a per-segment timer.
     send_buf: BTreeMap<u32, Segment>,
     /// Timer used to determine when to close a TCP connection in the TIME_WAIT
     /// state.
-    time_wait: Instant,
+    pub time_wait: Instant,
     /// Maximum Segment Size (MSS) received from peer.
     peer_mss: u16,
     /// State the current TCP connection was opened in.
     open_kind: OpenKind,
 }
 
-/// Represents the different TCP connection states.
+/// Different TCP connection states.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum ConnectionState {
     /// Represents waiting for a connection request from any remote TCP and
     /// port.
@@ -203,23 +218,18 @@ pub struct RecvSeqSpace {
     irs: u32,
 }
 
-/// Represents the state a TCP connection was opened in.
+/// States a TCP connection could be opened from.
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
 pub enum OpenKind {
-    /// TCP connection was opened in a "passive" state (LISTEN -> SYN_RECEIVED).
+    /// TCP connection was opened in a "passive" state (`LISTEN` -> `SYN_RECEIVED`).
     PASSIVE_OPEN,
-    /// TCP connection was opened in an "active" state (CLOSED -> SYN_SENT).
+    /// TCP connection was opened in an "active" state (`CLOSED` -> `SYN_SENT`).
     ACTIVE_OPEN,
 }
 
 impl TCB {
     /// Initiates a new TCP connection with the provided socket information.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be constructed or if
-    /// writing to the peer fails.
     pub fn on_conn_init(nic: &mut Tun, socket: Socket) -> Result<Self> {
         // Initial Send Sequence Number.
         let iss = 0;
@@ -261,7 +271,8 @@ impl TCB {
                 // updated when peer responds.
                 irs: 0,
             },
-            recv_buf: Default::default(),
+            usr_buf: Default::default(),
+            rcv_buf: Default::default(),
             send_buf: Default::default(),
             time_wait: Instant::now(),
             // Will be updated when peer responds.
@@ -281,11 +292,6 @@ impl TCB {
 
     /// Processes an incoming TCP connection request for which no connection
     /// state exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the incoming segment is invalid, if the TCP segment
-    /// could not be constructed, or if writing to the peer fails.
     pub fn on_conn_req(nic: &mut Tun, iph: &Ipv4Header, tcph: &TcpHeader) -> Result<Option<Self>> {
         log_packet(iph, tcph, &[]);
 
@@ -332,8 +338,14 @@ impl TCB {
             state: ConnectionState::SYN_RECEIVED,
             // Stored in reverse order of peer's perspective.
             sock: Socket {
-                src: (iph.dst(), tcph.dst_port()),
-                dst: (iph.src(), tcph.src_port()),
+                src: SocketAddr {
+                    addr: iph.dst(),
+                    port: tcph.dst_port(),
+                },
+                dst: SocketAddr {
+                    addr: iph.src(),
+                    port: tcph.src_port(),
+                },
             },
             snd: SendSeqSpace {
                 // Should be the value of the last ACK received. Set to ISS
@@ -365,7 +377,8 @@ impl TCB {
                 // What sequence number the peer chooses to start from.
                 irs: tcph.seq_number(),
             },
-            recv_buf: Default::default(),
+            usr_buf: Default::default(),
+            rcv_buf: Default::default(),
             send_buf: Default::default(),
             time_wait: Instant::now(),
             peer_mss: tcph.options().mss().unwrap_or(DEFAULT_MSS),
@@ -384,13 +397,13 @@ impl TCB {
 
     /// Processes an existing connection's retransmission queue for expired
     /// timers or acknowledged segments. Determines whether segments should be
-    /// retransmitted to the peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the function fails to retransmit a queued segment.
-    pub fn on_conn_tick(&mut self, nic: &mut Tun) -> Result<()> {
+    /// retransmitted to the peer, returning the [Duration] of when the next
+    /// segment will expire.
+    pub fn on_conn_tick(&mut self, nic: &mut Tun) -> Result<Duration> {
         if !self.send_buf.is_empty() {
+            // Track the segment with the closest time to expire.
+            let mut nearest_timer = Duration::MAX;
+
             // Remove segments that have been acknowledged fully or have been
             // retransmitted `MAX_RETRANSMIT_ATTEMPTS` times.
             self.send_buf.retain(|_, seg| {
@@ -415,20 +428,17 @@ impl TCB {
                             state = self.state,
                         );
 
-                        // Used to indicate connection can be removed.
-                        self.state = ConnectionState::CLOSED;
-
                         // Can't borrow `self` so manually creating RST segment.
                         let mut rst =
-                            TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, 0);
+                            TcpHeader::new(self.sock.src.port, self.sock.dst.port, self.snd.nxt, 0);
 
                         rst.set_rst();
 
                         // SAFETY: The payload length is less than the maximum 
                         // payload length allowed.
                         let mut ip = Ipv4Header::new(
-                            self.sock.src.0,
-                            self.sock.dst.0,
+                            self.sock.src.addr,
+                            self.sock.dst.addr,
                             rst.header_len() as u16,
                             64,
                             Protocol::TCP,
@@ -441,6 +451,9 @@ impl TCB {
                             error!("{err}");
                         }
 
+                        // Used to indicate connection can be removed.
+                        self.state = ConnectionState::CLOSED;
+
                         false
                     } else {
                         // Retransmit segment.
@@ -452,7 +465,7 @@ impl TCB {
                         }
 
                         debug!(
-                            "[{}] ({:?}) segment retransmitted, transmit count: {}",
+                            "[{}] ({:?}) segment retransmitted, updated transmit count: {}",
                             self.sock, self.state, seg.transmit_count
                         );
 
@@ -460,17 +473,28 @@ impl TCB {
                     }
                 } else {
                     // Peer still has time to ACK the segment...
+                    //
+                    // Track the nearest timer to expire.
+                    let remaining = effective_rto - seg.timer.elapsed();
+
+                    if remaining < nearest_timer {
+                        nearest_timer = remaining;
+                    }
+
                     true
                 }
             });
+
+            return Ok(nearest_timer);
         }
 
-        Ok(())
+        // No segments on retransmission queue.
+        Ok(Duration::MAX)
     }
 
     /// Processes an incoming TCP segment for an existing connection.
     ///
-    /// RFC 793 (3.2):
+    /// TCP State Diagram (RFC 793 3.2):
     ///
     /// ```text
     ///                              +---------+ ---------\      active OPEN
@@ -525,8 +549,6 @@ impl TCB {
         tcph: &TcpHeader,
         payload: &[u8],
     ) -> Result<()> {
-        // TODO: Implement zero-window probing.
-
         // This should never happen, but just in case...
         if let ConnectionState::CLOSED | ConnectionState::LISTEN = self.state {
             return Err(Error::Io(io::Error::new(
@@ -562,9 +584,9 @@ impl TCB {
                         self.sock
                     );
 
-                    self.state = ConnectionState::CLOSED;
-
                     self.send_rst(nic, ackn, 0)?;
+
+                    self.state = ConnectionState::CLOSED;
 
                     return Err(Error::Io(io::Error::new(
                         io::ErrorKind::ConnectionRefused,
@@ -624,8 +646,9 @@ impl TCB {
                         self.sock
                     );
 
-                    self.state = ConnectionState::ESTABLISHED;
                     self.send_ack(nic, &[])?;
+
+                    self.state = ConnectionState::ESTABLISHED;
                 }
                 (true, false) => {
                     // Case 2: Only SYN received (send SYN_ACK).
@@ -646,8 +669,9 @@ impl TCB {
                         self.sock
                     );
 
-                    self.state = ConnectionState::SYN_RECEIVED;
                     self.send_syn_ack(nic)?;
+
+                    self.state = ConnectionState::SYN_RECEIVED;
 
                     // Accounting for the SYN sent.
                     self.snd.nxt = self.snd.nxt.wrapping_add(1);
@@ -661,6 +685,11 @@ impl TCB {
 
                     // Received an ACK for out SYN.
                     self.snd.una = ackn;
+
+                    debug!(
+                        "[{}] (SYN_SENT) received valid ACK: waiting for SYN",
+                        self.sock
+                    );
                 }
                 (false, false) => {
                     // Case 4: Neither SYN or ACK received (return).
@@ -786,13 +815,13 @@ impl TCB {
                 state = self.state,
             );
 
-            self.state = ConnectionState::CLOSED;
-
             if tcph.ack() {
                 self.send_rst(nic, ackn, 0)?;
             } else {
                 self.send_rst(nic, 0, seqn.wrapping_add(seg_len))?;
             }
+
+            self.state = ConnectionState::CLOSED;
 
             return Err(Error::Io(io::Error::new(
                 io::ErrorKind::ConnectionReset,
@@ -819,8 +848,9 @@ impl TCB {
                         self.sock, ackn,
                     );
 
-                    self.state = ConnectionState::CLOSED;
                     self.send_rst(nic, ackn, 0)?;
+
+                    self.state = ConnectionState::CLOSED;
 
                     return Err(Error::Io(io::Error::new(
                         io::ErrorKind::ConnectionReset,
@@ -874,12 +904,31 @@ impl TCB {
                             self.snd.wnd = tcph.window();
                             self.snd.wl1 = seqn;
                             self.snd.wl2 = ackn;
+
+                            debug!(
+                                "[{}] ({:?}) updated send window, new size: {}",
+                                self.sock, self.state, self.snd.wnd
+                            );
                         }
                     }
                 }
 
                 match self.state {
-                    ConnectionState::ESTABLISHED => {}
+                    ConnectionState::ESTABLISHED => {
+                        // Immediately reply with a FIN_ACK to simulate closing
+                        // connection from the local side.
+                        //                        debug!(
+                        //                            "[{}] (ESTABLISHED) sending FIN_ACK: ESTABLISHED -> FIN_WAIT_1",
+                        //                            self.sock
+                        //                        );
+                        //
+                        //                        self.send_fin_ack(nic, &[])?;
+                        //
+                        //                        self.state = ConnectionState::FIN_WAIT_1;
+                        //
+                        //                        // Account for the FIN sent.
+                        //                        self.snd.nxt = self.snd.nxt.wrapping_add(1);
+                    }
                     ConnectionState::FIN_WAIT_1 => {
                         debug!(
                             "[{}] (FIN_WAIT_1) received ACK for FIN: FIN_WAIT_1 -> FIN_WAIT_2",
@@ -888,26 +937,7 @@ impl TCB {
 
                         self.state = ConnectionState::FIN_WAIT_2;
                     }
-                    ConnectionState::FIN_WAIT_2 => {
-                        // TODO: In addition to the processing for the
-                        // ESTABLISHED state, if the retransmission queue is
-                        // empty, the user's CLOSE can be acknowledged ("ok")
-                        // but do not delete the TCB.
-                    }
-                    ConnectionState::CLOSE_WAIT => {
-                        // TODO: For now a FIN is immediately sent in response
-                        // but it should instead be triggered by user code.
-                        debug!(
-                            "[{}] (CLOSE_WAIT) sending FIN_ACK: CLOSE_WAIT -> LAST_ACK",
-                            self.sock
-                        );
-
-                        self.state = ConnectionState::LAST_ACK;
-                        self.send_fin_ack(nic, &[])?;
-
-                        // Account for the FIN sent.
-                        self.snd.nxt = self.snd.nxt.wrapping_add(1);
-                    }
+                    ConnectionState::FIN_WAIT_2 | ConnectionState::CLOSE_WAIT => {}
                     ConnectionState::CLOSING => {
                         debug!(
                             "[{}] (CLOSING) received ACK for FIN: CLOSING -> TIME_WAIT",
@@ -943,36 +973,93 @@ impl TCB {
                         match seqn.cmp(&self.rcv.nxt) {
                             // We received the next bytes we were expecting.
                             Ordering::Equal => {
-                                self.recv_buf.insert(seqn, payload.into());
+                                self.usr_buf.extend(payload);
 
                                 self.rcv.nxt = self.rcv.nxt.wrapping_add(payload.len() as u32);
                                 self.rcv.wnd = self.rcv.wnd.saturating_sub(payload.len() as u16);
+
+                                debug!(
+                                    "[{}] ({:?}) received expected payload: buffering in-order",
+                                    self.sock, self.state
+                                );
+
+                                // Check if out-of-order segments can now be
+                                // merged.
+                                self.rcv_buf.retain(|seq, data| {
+                                    // Not the next bytes we expect.
+                                    if *seq != self.rcv.nxt {
+                                        true
+                                    } else {
+                                        let payload = mem::take(data);
+                                        let len = payload.len();
+
+                                        self.usr_buf.extend(payload);
+
+                                        self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
+                                        self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
+
+                                        false
+                                    }
+                                });
                             }
                             // Received data we were not expecting yet. Data is
                             // buffered but RCV.NXT is kept the same.
                             Ordering::Greater => {
-                                self.recv_buf.insert(seqn, payload.into());
-
-                                self.rcv.wnd = self.rcv.wnd.saturating_sub(payload.len() as u16);
+                                // Buffer as an out-of-order payload. Wait to
+                                // merge with user buffer on receiving new
+                                // in-order data.
+                                debug!(
+                                    "[{}] ({:?}) received out-of-order payload: buffering out-of-order",
+                                    self.sock, self.state
+                                );
+                                self.rcv_buf.insert(seqn, payload.into());
                             }
                             // Part of the segment overlaps data we have already
                             // received.
                             Ordering::Less => {
                                 // Don't need wrapping_sub() since RCV.NXT is
                                 // determined to be greater.
-                                let start = (self.rcv.nxt - seqn) as usize;
+                                let start = (self.rcv.nxt.wrapping_sub(seqn)) as usize;
 
                                 if payload.len() <= start {
                                     // Entire payload is old/duplicate data...
+                                    debug!(
+                                        "[{}] ({:?}) received fully old/duplicate payload: ignoring",
+                                        self.sock, self.state
+                                    );
                                 } else {
                                     // Discard old/duplicate portion.
                                     let payload = &payload[start..];
 
-                                    // Keyed by RCV.NXT instead of SEG.SEQ.
-                                    self.recv_buf.insert(self.rcv.nxt, payload.into());
+                                    self.usr_buf.extend(payload);
+
                                     self.rcv.nxt = self.rcv.nxt.wrapping_add(payload.len() as u32);
                                     self.rcv.wnd =
                                         self.rcv.wnd.saturating_sub(payload.len() as u16);
+
+                                    debug!(
+                                        "[{}] ({:?}) received partially old/duplicate payload: buffering expected portion in-order",
+                                        self.sock, self.state
+                                    );
+
+                                    // Check if out-of-order segments can now be
+                                    // merged.
+                                    self.rcv_buf.retain(|seq, data| {
+                                        // Not the next bytes we expect.
+                                        if *seq != self.rcv.nxt {
+                                            true
+                                        } else {
+                                            let payload = mem::take(data);
+                                            let len = payload.len();
+
+                                            self.usr_buf.extend(payload);
+
+                                            self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
+                                            self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
+
+                                            false
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -982,6 +1069,24 @@ impl TCB {
                         // Accounting for the received FIN.
                         self.rcv.nxt = self.rcv.nxt.wrapping_add(1);
 
+                        // Peer is done sending data, merge what we can.
+                        self.rcv_buf.retain(|seq, data| {
+                            // Not the next bytes we expect.
+                            if *seq != self.rcv.nxt {
+                                true
+                            } else {
+                                let payload = mem::take(data);
+                                let len = payload.len();
+
+                                self.usr_buf.extend(payload);
+
+                                self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
+                                self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
+
+                                false
+                            }
+                        });
+
                         match self.state {
                             ConnectionState::ESTABLISHED => {
                                 debug!(
@@ -989,9 +1094,20 @@ impl TCB {
                                     self.sock
                                 );
 
-                                // TODO: stuck here unless user code triggers
-                                // FIN sent to the peer.
                                 self.state = ConnectionState::CLOSE_WAIT;
+
+                                // Immediately reply with a FIN_ACK for now.
+                                debug!(
+                                    "[{}] (CLOSE_WAIT) sending FIN_ACK: CLOSE_WAIT -> LAST_ACK",
+                                    self.sock
+                                );
+
+                                self.send_fin_ack(nic, &[])?;
+
+                                self.state = ConnectionState::LAST_ACK;
+
+                                // Account for the FIN sent.
+                                self.snd.nxt = self.snd.nxt.wrapping_add(1);
                             }
                             ConnectionState::FIN_WAIT_1 => {
                                 debug!(
@@ -1016,12 +1132,20 @@ impl TCB {
                         }
                     }
 
-                    if self.state != ConnectionState::TIME_WAIT {
-                        self.send_ack(nic, &[])?;
+                    // Since FIN_WAIT_2 -> TIME_WAIT will cascade down and
+                    // respond with an ACK from there.
+                    //
+                    // LAST_ACK already sends an ACK with it's FIN.
+                    if !matches!(
+                        self.state,
+                        ConnectionState::TIME_WAIT | ConnectionState::LAST_ACK
+                    ) {
                         debug!(
                             "[{}] ({:?}) received data: sending ACK",
                             self.sock, self.state,
                         );
+
+                        self.send_ack(nic, &[])?;
                     }
                 }
             }
@@ -1033,6 +1157,8 @@ impl TCB {
                 // retransmission of the remote FIN. Acknowledge it, and restart
                 // the 2 MSL timeout.
                 if tcph.fin() {
+                    debug!("[{}] (TIME_WAIT) received FIN: resetting timer", self.sock,);
+
                     self.time_wait = Instant::now();
                     self.send_ack(nic, &[])?;
                 }
@@ -1042,31 +1168,21 @@ impl TCB {
         Ok(())
     }
 
-    /// Returns the current state of the TCP connection.
-    pub fn state(&self) -> ConnectionState {
-        self.state
-    }
-
-    /// Returns the current value of the TIME_WAIT timer for the TCP connection.
-    pub fn time_wait(&self) -> Instant {
-        self.time_wait
-    }
-
     /// Transmits a TCP SYN packet to initiate a connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be written to the TUN
-    /// device.
     fn send_syn(&mut self, nic: &mut Tun) -> Result<()> {
-        let mut syn = TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.iss, self.rcv.wnd);
+        let mut syn = TcpHeader::new(
+            self.sock.src.port,
+            self.sock.dst.port,
+            self.snd.iss,
+            self.rcv.wnd,
+        );
 
         syn.set_syn();
         syn.set_option_mss(1460)?;
 
         let mut ip = Ipv4Header::new(
-            self.sock.src.0,
-            self.sock.dst.0,
+            self.sock.src.addr,
+            self.sock.dst.addr,
             syn.header_len() as u16,
             64,
             Protocol::TCP,
@@ -1093,14 +1209,13 @@ impl TCB {
     }
 
     /// Transmits a TCP SYN_ACK packet in response to a connection request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be written to the TUN
-    /// device.
     fn send_syn_ack(&mut self, nic: &mut Tun) -> Result<()> {
-        let mut syn_ack =
-            TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.iss, self.rcv.wnd);
+        let mut syn_ack = TcpHeader::new(
+            self.sock.src.port,
+            self.sock.dst.port,
+            self.snd.iss,
+            self.rcv.wnd,
+        );
 
         // Acknowledge the peer's SYN.
         syn_ack.set_ack_number(self.rcv.nxt);
@@ -1109,8 +1224,8 @@ impl TCB {
         syn_ack.set_option_mss(1460)?;
 
         let mut ip = Ipv4Header::new(
-            self.sock.src.0,
-            self.sock.dst.0,
+            self.sock.src.addr,
+            self.sock.dst.addr,
             syn_ack.header_len() as u16,
             64,
             Protocol::TCP,
@@ -1137,18 +1252,22 @@ impl TCB {
     }
 
     /// Transmits a TCP ACK packet in response to a peer's TCP segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be written to the TUN
-    /// device.
-    fn send_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<()> {
-        let mut ack = TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, self.rcv.wnd);
+    pub fn send_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<()> {
+        let mut ack = TcpHeader::new(
+            self.sock.src.port,
+            self.sock.dst.port,
+            self.snd.nxt,
+            self.rcv.wnd,
+        );
 
         ack.set_ack_number(self.rcv.nxt);
         ack.set_ack();
 
-        let mut ip = Ipv4Header::new(self.sock.src.0, self.sock.dst.0, 0, 64, Protocol::TCP)?;
+        if !payload.is_empty() {
+            ack.set_psh();
+        }
+
+        let mut ip = Ipv4Header::new(self.sock.src.addr, self.sock.dst.addr, 0, 64, Protocol::TCP)?;
 
         ip.set_payload_len((ack.header_len() + payload.len()) as u16)?;
 
@@ -1175,20 +1294,19 @@ impl TCB {
     }
 
     /// Transmits a TCP FIN_ACK packet for graceful connection termination.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be written to the TUN
-    /// device.
     fn send_fin_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<()> {
-        let mut fin_ack =
-            TcpHeader::new(self.sock.src.1, self.sock.dst.1, self.snd.nxt, self.rcv.wnd);
+        let mut fin_ack = TcpHeader::new(
+            self.sock.src.port,
+            self.sock.dst.port,
+            self.snd.nxt,
+            self.rcv.wnd,
+        );
 
         fin_ack.set_ack_number(self.rcv.nxt);
         fin_ack.set_fin();
         fin_ack.set_ack();
 
-        let mut ip = Ipv4Header::new(self.sock.src.0, self.sock.dst.0, 0, 64, Protocol::TCP)?;
+        let mut ip = Ipv4Header::new(self.sock.src.addr, self.sock.dst.addr, 0, 64, Protocol::TCP)?;
 
         ip.set_payload_len((fin_ack.header_len() + payload.len()) as u16)?;
 
@@ -1213,13 +1331,8 @@ impl TCB {
     }
 
     /// Transmits a TCP RST packet to terminate the current connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be written to the TUN
-    /// device.
     fn send_rst(&self, nic: &mut Tun, seq: u32, ack: u32) -> Result<()> {
-        let mut rst = TcpHeader::new(self.sock.src.1, self.sock.dst.1, seq, 0);
+        let mut rst = TcpHeader::new(self.sock.src.port, self.sock.dst.port, seq, 0);
 
         rst.set_rst();
 
@@ -1229,8 +1342,8 @@ impl TCB {
         }
 
         let mut ip = Ipv4Header::new(
-            self.sock.src.0,
-            self.sock.dst.0,
+            self.sock.src.addr,
+            self.sock.dst.addr,
             rst.header_len() as u16,
             64,
             Protocol::TCP,
@@ -1245,11 +1358,6 @@ impl TCB {
     }
 
     /// Writes the IP and TCP headers, along with a payload, to the TUN device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP segment could not be written to the TUN
-    /// device.
     fn write(nic: &mut Tun, ip: &Ipv4Header, tcp: &TcpHeader, payload: &[u8]) -> Result<usize> {
         let mut buf = [0u8; MTU_SIZE];
 
