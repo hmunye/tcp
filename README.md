@@ -193,7 +193,7 @@ Spoof a FIN segment to begin the graceful connection termination process:
 sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 2196812312 --setack 1 --win 64240 --ack --fin -c 1
 ```
 
-`tshark` Output (notice the retransmission of the FIN-ACK segment):
+`tshark` Output (notice the retransmission of the FIN-ACK segment from the server):
 
 ```
 10 788.034917929     10.0.0.1 → 10.0.0.2     TCP 40 37195 → 80 [FIN, ACK] Seq=20 Ack=1 Win=64240 Len=0
@@ -203,7 +203,7 @@ sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 21
 14 796.030463433     10.0.0.2 → 10.0.0.1     TCP 40 [TCP Retransmission] 80 → 37195 [FIN, ACK] Seq=1 Ack=21 Win=4077 Len=0
 ```
 
-Program Logs (notice the retransmission of the FIN-ACK segment):
+Program Logs (notice the retransmission of the FIN-ACK segment from the server):
 
 ```
 [2025-08-08 14:43:02] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 40, id: 53641, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x9544 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
@@ -282,15 +282,16 @@ Running the following script:
 ```
 > Requires root privileges. Review script code before execution.
 
-- Builds and run the crate in release mode with `CAP_NET_ADMIN` as a background process
+- Builds and runs the crate in release mode with the `CAP_NET_ADMIN` privilege as a background process
 
-- Sets the `tun0` interface up
+- Brings the `tun0` interface up
 
 - Assigns the local IP address `10.0.0.1/32` to the TUN device with a peer address `10.0.0.2`
 
 - Waits on the process to complete and cleans up on SIGINT and SIGTERM signals
 
-You can now use `10.0.0.1` as the source address and `10.0.0.2` as the destination for connections.
+You can now use `10.0.0.1` as the source address and `10.0.0.2` as the destination 
+to establish or listen for connections.
 
 Example:
 
