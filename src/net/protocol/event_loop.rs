@@ -1,5 +1,6 @@
-//! Event loop to manage the TCP and packet I/O through the TUN virtual network
-//! device.
+//! Event loop to manage the TCP, monitor for raw packet I/O through the TUN
+//! virtual network device, timers for connection cleanup and retransmission,
+//! and signals for graceful shutdown.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -22,7 +23,7 @@ const EPOLL_MAX_EVENTS: i32 = 3;
 /// block indefinitely until an event occurs.
 const EPOLL_TIMEOUT_MS: i32 = -1;
 
-/// Runs an event loop to monitor for and process incoming IP frames from the
+/// Runs an event loop to monitor for and process incoming IP packets from the
 /// TUN virtual network device. This function runs continuously until receiving
 /// a shutdown signal (e.g., SIGINT, SIGTERM) or encountering an error.
 pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Result<()> {
@@ -190,7 +191,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                     }
                 }
 
-                // Received an IP frame.
+                // Received an IP packet.
                 if event.u64 == tun_fd as u64 {
                     let nbytes = match nic.recv(&mut buf[..]) {
                         Ok(bytes) => bytes,
@@ -203,7 +204,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                     match Ipv4Header::try_from(&buf[..nbytes]) {
                         Ok(iph) if iph.protocol() == Protocol::TCP => {
                             if !iph.is_valid_checksum() {
-                                warn!("invalid packet received: invalid IPv4 header checksum");
+                                warn!("invalid IP packet received: invalid IPv4 header checksum");
                                 break;
                             }
 
@@ -218,11 +219,11 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                                         &buf[iph.header_len() + tcph.header_len()..nbytes];
 
                                     if !tcph.is_valid_checksum(&iph, payload) {
-                                        warn!("invalid packet received: invalid TCP checksum");
+                                        warn!("invalid IP packet received: invalid TCP checksum");
                                         break;
                                     }
 
-                                    // Packets source and destination are from
+                                    // Packet's source and destination are from
                                     // the peer's perspective. Stored in the
                                     // reverse order.
                                     let socket = Socket {
@@ -288,7 +289,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                                     }
                                 }
                                 Err(err) => {
-                                    error!("could not parse TCP header: {err}");
+                                    error!("invalid IP packet received: {err}");
                                 }
                             }
                         }
@@ -296,7 +297,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                             debug!("ignoring non-TCP ({:?}) packet", p.protocol());
                         }
                         Err(err) => {
-                            error!("could not parse IPv4 header: {err}");
+                            error!("invalid IP packet received: {err}");
                         }
                     }
                 }

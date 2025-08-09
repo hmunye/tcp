@@ -5,11 +5,11 @@ TCP implementation in user-space, built for learning purposes, using the TUN/TAP
 > [!WARNING]
 > Not suitable for production use.
 
-This project is a minimal but functional TCP implementation written from scratch in Rust,
-based primarily on [RFC 793](https://www.rfc-editor.org/rfc/rfc793). It supports enough of the 
-protocol to interoperate with tools like [tshark](https://www.wireshark.org/docs/man-pages/tshark.html), 
-[netcat](https://netcat.sourceforge.net/), and [hping3](https://www.kali.org/tools/hping3/) using 
-raw packet I/O over a TUN interface.
+This project is a minimal but functional TCP implementation written from scratch in Rust, based 
+primarily on [RFC 793](https://www.rfc-editor.org/rfc/rfc793). It supports enough of the protocol to 
+interoperate with tools like [tshark](https://www.wireshark.org/docs/man-pages/tshark.html), 
+[netcat](https://netcat.sourceforge.net/), and [hping3](https://www.kali.org/tools/hping3/) using raw 
+packet I/O over a TUN interface.
 
 ## TOC
 
@@ -30,7 +30,7 @@ raw packet I/O over a TUN interface.
 
 - Full retransmission queue with exponential backoff and max-attempt handling
 
-- Out-of-order segment buffering and in-order reassembly
+- Out-of-order segment payload buffering and in-order payload reassembly
 
 - Window tracking: RCV.WND, SND.WND, and peer MSS
 
@@ -46,7 +46,7 @@ raw packet I/O over a TUN interface.
 Tested using:
 
 - `netcat` for both inbound and outbound TCP connections
-- `hping3` for crafting spoofed TCP packets
+- `hping3` for crafting spoofed TCP segments
 - `tshark` to inspect and validate sequence numbers, ACKs, flags, window sizes, etc.
 
 Unit tests for parsing and serialization of headers can be run with:
@@ -57,10 +57,11 @@ cargo t
 
 ### Example Test: Out-of-Order Payload Handling
 
-This test verifies that payloads from out-of-order segments are properly managed and reassembled in-order.
+This test verifies that payloads from out-of-order segments are properly managed and reassembled 
+in-order.
 
-To ensure that RST segments are blocked before reaching the TUN interface and do not interfere with the test, 
-use the following `iptables` rule:
+To ensure that RST segments are blocked before reaching the TUN interface and do not interfere with 
+the test, use the following `iptables` rule:
 
 ```bash
 sudo iptables -I OUTPUT 1 -d 10.0.0.2 -p tcp --tcp-flags RST RST -j DROP
@@ -105,11 +106,11 @@ Program Logs:
 
 ```
 [2025-08-08 14:29:49] INFO  [tcp] interface name: tun0
-[2025-08-08 14:29:54] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 60, id: 20988, DF: true, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xd4bd (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:29:54] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 60, id: 20988, DF: true, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xd4bd (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:29:54] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812292, ack num: 0, data offset: 10, urg: false, ack: false, psh: false, rst: false, syn: true, fin: false, window: 64240, chksum: 0xfbe8 (valid: true), mss: Some(1460)
 [2025-08-08 14:29:54] DEBUG [tcp] received 0 bytes of payload: []
 [2025-08-08 14:29:54] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (LISTEN) received SYN, sending SYN_ACK: LISTEN/PASSIVE_OPEN -> SYN_RECEIVED
-[2025-08-08 14:29:54] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 40, id: 20989, DF: true, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xd4d0 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:29:54] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 40, id: 20989, DF: true, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xd4d0 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:29:54] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812293, ack num: 1, data offset: 5, urg: false, ack: true, psh: false, rst: false, syn: false, fin: false, window: 64240, chksum: 0xda4e (valid: true), mss: None
 [2025-08-08 14:29:54] DEBUG [tcp] received 0 bytes of payload: []
 [2025-08-08 14:29:54] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (SYN_RECEIVED) received valid ACK: SYN_RECEIVED -> ESTABLISHED
@@ -119,9 +120,7 @@ Program Logs:
 The following payloads will be sent:
 
 - "first"
-
 - " third" (sent out of order, but will be reassembled in-order)
-
 - " second"
 
 Send the first payload ("first") using `netcat`.
@@ -136,14 +135,14 @@ Send the first payload ("first") using `netcat`.
 Program Logs:
 
 ```
-[2025-08-08 14:33:37] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 46, id: 20990, DF: true, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xd4c9 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:33:37] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 46, id: 20990, DF: true, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xd4c9 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:33:37] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812293, ack num: 1, data offset: 5, urg: false, ack: true, psh: true, rst: false, syn: false, fin: false, window: 64240, chksum: 0x8d59 (valid: true), mss: None
 [2025-08-08 14:33:37] DEBUG [tcp] received 6 bytes of payload: [66, 69, 72, 73, 74, a]
 [2025-08-08 14:33:37] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received expected payload: buffering in-order
 [2025-08-08 14:33:37] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received data: sending ACK
 ```
 
-Use `hping3` to spoof an out-of-order segment containing the payload (" third"):
+Use `hping3` to spoof an out-of-order TCP segment containing the payload (" third"):
 
 ```bash
 sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 2196812306 --setack 1 --win 64240 --ack --push --sign " third" -c 1
@@ -159,14 +158,14 @@ sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 21
 Program Logs:
 
 ```
-[2025-08-08 14:37:45] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 46, id: 47489, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xad46 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:37:45] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 46, id: 47489, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0xad46 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:37:45] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812306, ack num: 1, data offset: 5, urg: false, ack: true, psh: true, rst: false, syn: false, fin: false, window: 64240, chksum: 0xdef1 (valid: true), mss: None
 [2025-08-08 14:37:45] DEBUG [tcp] received 6 bytes of payload: [20, 74, 68, 69, 72, 64]
 [2025-08-08 14:37:45] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received out-of-order payload: buffering out-of-order
 [2025-08-08 14:37:45] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received data: sending ACK
 ```
 
-Next, spoof another segment with the payload (" second"), using the actual expected sequence number:
+Next, spoof another TCP segment with the payload (" second"), using the actual expected sequence number:
 
 ```bash
 sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 34915 --destport 80 --setseq 2785579383 --setack 1 --win 64240 --ack --push --sign " second" -c 1
@@ -182,14 +181,14 @@ sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 34915 --destport 80 --setseq 27
 Program Logs:
 
 ```
-[2025-08-08 14:39:48] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 47, id: 54451, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x9213 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:39:48] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 47, id: 54451, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x9213 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:39:48] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812299, ack num: 1, data offset: 5, urg: false, ack: true, psh: true, rst: false, syn: false, fin: false, window: 64240, chksum: 0x80f4 (valid: true), mss: None
 [2025-08-08 14:39:48] DEBUG [tcp] received 7 bytes of payload: [20, 73, 65, 63, 6f, 6e, 64]
 [2025-08-08 14:39:48] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received expected payload: buffering in-order
 [2025-08-08 14:39:48] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received data: sending ACK
 ```
 
-Spoof a FIN segment to begin the graceful connection termination process:
+Spoof a TCP FIN-ACK segment to begin the graceful connection termination process:
 
 ```bash
 sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 2196812312 --setack 1 --win 64240 --ack --fin -c 1
@@ -208,7 +207,7 @@ sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 21
 Program Logs (notice the retransmission of the FIN-ACK segment from the server):
 
 ```
-[2025-08-08 14:43:02] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 40, id: 53641, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x9544 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:43:02] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 40, id: 53641, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x9544 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:43:02] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812312, ack num: 1, data offset: 5, urg: false, ack: true, psh: false, rst: false, syn: false, fin: true, window: 64240, chksum: 0xda3a (valid: true), mss: None
 [2025-08-08 14:43:02] DEBUG [tcp] received 0 bytes of payload: []
 [2025-08-08 14:43:02] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (ESTABLISHED) received FIN: ESTABLISHED -> CLOSE_WAIT
@@ -218,7 +217,7 @@ Program Logs (notice the retransmission of the FIN-ACK segment from the server):
 [2025-08-08 14:43:10] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (LAST_ACK) segment retransmitted, updated transmit count: 3
 ```
 
-Finally, send the final ACK segment to close the connection:
+Finally, spoof the final ACK segment to close the connection:
 
 ```bash
 sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 2196812313 --setack 2 --win 64240 --ack -c 1
@@ -233,7 +232,7 @@ sudo hping3 10.0.0.2 --spoof 10.0.0.1 --baseport 37195 --destport 80 --setseq 21
 Program Logs:
 
 ```
-[2025-08-08 14:43:16] DEBUG [tcp] received ipv4 datagram | version: 4, ihl: 5, tos: 0, total_len: 40, id: 934, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x6328 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
+[2025-08-08 14:43:16] DEBUG [tcp] received ipv4 packet   | version: 4, ihl: 5, tos: 0, total_len: 40, id: 934, DF: false, MF: false, frag_offset: 0, ttl: 64, protocol: TCP, chksum: 0x6328 (valid: true), src: [10, 0, 0, 1], dst: [10, 0, 0, 2]
 [2025-08-08 14:43:16] DEBUG [tcp] received tcp segment   | src port: 37195, dst port: 80, seq num: 2196812313, ack num: 2, data offset: 5, urg: false, ack: true, psh: false, rst: false, syn: false, fin: false, window: 64240, chksum: 0xda39 (valid: true), mss: None
 [2025-08-08 14:43:16] DEBUG [tcp] received 0 bytes of payload: []
 [2025-08-08 14:43:16] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] (LAST_ACK) updated send window, new size: 64240
@@ -242,12 +241,13 @@ Program Logs:
 [2025-08-08 14:43:16] DEBUG [tcp] [10.0.0.2:80 -> 10.0.0.1:37195] removed connection, active connections remaining: 0
 ```
 
-Although the payloads were sent out of order, the implementation successfully buffers and reorders them, 
+Although the segment payloads were sent out of order, the implementation successfully buffers and reorders them, 
 displaying the expected in-order output:
 
 ```
 first\n second third
 ```
+> Line feed is from the segment payload sent by `netcat` 
 
 ## What's Not Included
 
@@ -275,7 +275,7 @@ Currently a Linux-only crate due to the use of:
 
 - `epoll` for the event loop
 
-- `/dev/net/tun` interface for raw IP traffic
+- `/dev/net/tun` interface for raw IP packet traffic
 
 Running the following script:
 
@@ -293,7 +293,7 @@ Running the following script:
 - Waits on the process to complete and cleans up on SIGINT and SIGTERM signals
 
 You can now use `10.0.0.1` as the source address and `10.0.0.2` as the destination 
-to establish or listen for connections.
+to establish or listen for TCP connections.
 
 Example:
 

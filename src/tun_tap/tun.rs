@@ -31,7 +31,7 @@ impl Tun {
     ///
     /// - Flags [2 bytes]
     /// - Proto [2 bytes] [EtherType]
-    /// - Raw protocol (IP, IPv6, etc) frame
+    /// - Raw protocol (IP, IPv6, etc) packet
     ///
     /// [EtherType]: https://en.wikipedia.org/wiki/EtherType
     ///
@@ -49,12 +49,12 @@ impl Tun {
     /// Creates a new TUN virtual network device without packet information.
     ///
     /// Packets received on this device will EXCLUDE the leading 4 bytes of
-    /// packet info:
+    /// packet information:
     ///
     /// - Flags [2 bytes]
     /// - Proto [2 bytes] [EtherType]
     ///
-    /// and only contain the raw protocol (IP, IPv6, etc) frame.
+    /// and only contain the raw protocol (IP, IPv6, etc) packet.
     ///
     /// [EtherType]: https://en.wikipedia.org/wiki/EtherType
     ///
@@ -84,7 +84,8 @@ impl Tun {
 
     /// Receives an IP packet from the TUN virtual network device.
     ///
-    /// By default, this call blocks until a packet is available for reading.
+    /// By default, this call blocks until an IP packet is available for
+    /// reading.
     ///
     /// The caller must ensure the buffer is large enough, `MTU_SIZE`, to
     /// accommodate the packet and any leading header data, if configured.
@@ -92,7 +93,7 @@ impl Tun {
         (&self.fd).read(buf).map_err(|err| err.into())
     }
 
-    /// Sends a network packet to the TUN virtual network device.
+    /// Sends an IP packet to the TUN virtual network device.
     ///
     /// The caller must ensure the packet size does not exceed `MTU_SIZE` and
     /// that it is properly formatted with the necessary headers.

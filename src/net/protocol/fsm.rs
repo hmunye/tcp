@@ -293,7 +293,7 @@ impl TCB {
     /// Processes an incoming TCP connection request for which no connection
     /// state exists.
     pub fn on_conn_req(nic: &mut Tun, iph: &Ipv4Header, tcph: &TcpHeader) -> Result<Option<Self>> {
-        log_packet(iph, tcph, &[]);
+        log_segment(iph, tcph, &[]);
 
         // An incoming RST should be ignored.
         if tcph.rst() {
@@ -557,7 +557,7 @@ impl TCB {
             )));
         }
 
-        log_packet(iph, tcph, payload);
+        log_segment(iph, tcph, payload);
 
         let seqn = tcph.seq_number();
         let ackn = tcph.ack_number();
@@ -1168,7 +1168,7 @@ impl TCB {
         Ok(())
     }
 
-    /// Transmits a TCP SYN packet to initiate a connection.
+    /// Transmits a TCP SYN segment to initiate a connection.
     fn send_syn(&mut self, nic: &mut Tun) -> Result<()> {
         let mut syn = TcpHeader::new(
             self.sock.src.port,
@@ -1208,7 +1208,7 @@ impl TCB {
         Ok(())
     }
 
-    /// Transmits a TCP SYN_ACK packet in response to a connection request.
+    /// Transmits a TCP SYN_ACK segment in response to a connection request.
     fn send_syn_ack(&mut self, nic: &mut Tun) -> Result<()> {
         let mut syn_ack = TcpHeader::new(
             self.sock.src.port,
@@ -1251,7 +1251,7 @@ impl TCB {
         Ok(())
     }
 
-    /// Transmits a TCP ACK packet in response to a peer's TCP segment.
+    /// Transmits a TCP ACK segment in response to a peer's TCP segment.
     pub fn send_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<()> {
         let mut ack = TcpHeader::new(
             self.sock.src.port,
@@ -1293,7 +1293,7 @@ impl TCB {
         Ok(())
     }
 
-    /// Transmits a TCP FIN_ACK packet for graceful connection termination.
+    /// Transmits a TCP FIN_ACK segment for graceful connection termination.
     fn send_fin_ack(&mut self, nic: &mut Tun, payload: &[u8]) -> Result<()> {
         let mut fin_ack = TcpHeader::new(
             self.sock.src.port,
@@ -1330,7 +1330,7 @@ impl TCB {
         Ok(())
     }
 
-    /// Transmits a TCP RST packet to terminate the current connection.
+    /// Transmits a TCP RST segment to terminate the current connection.
     fn send_rst(&self, nic: &mut Tun, seq: u32, ack: u32) -> Result<()> {
         let mut rst = TcpHeader::new(self.sock.src.port, self.sock.dst.port, seq, 0);
 
@@ -1357,7 +1357,7 @@ impl TCB {
         Ok(())
     }
 
-    /// Writes the IP and TCP headers, along with a payload, to the TUN device.
+    /// Writes an IP packet, encapsulating a TCP segment, to the TUN device.
     fn write(nic: &mut Tun, ip: &Ipv4Header, tcp: &TcpHeader, payload: &[u8]) -> Result<usize> {
         let mut buf = [0u8; MTU_SIZE];
 
@@ -1377,9 +1377,9 @@ impl TCB {
 }
 
 /// Logs the details of an incoming TCP segment.
-fn log_packet(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
+fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     debug!(
-        "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
+        "received ipv4 packet   | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
         iph.version(),
         iph.ihl(),
         iph.tos(),

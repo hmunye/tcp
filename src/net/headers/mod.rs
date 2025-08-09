@@ -1,4 +1,4 @@
-//! Parsing and construction of packet-based protocols (IPv4 and TCP).
+//! Parsing and construction of IPv4 and TCP headers.
 
 mod ipv4;
 mod tcp;

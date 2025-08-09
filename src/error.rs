@@ -60,7 +60,7 @@ impl fmt::Display for Error {
     }
 }
 
-/// Errors that can occur during TCP packet parsing.
+/// Errors that can occur during TCP segment parsing.
 #[derive(Debug)]
 #[allow(missing_docs)]
 #[non_exhaustive]
