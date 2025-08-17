@@ -1,0 +1,16 @@
+[package]
+name = "tcp-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Huseen Munye <>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/hmunye/tcp"
+description = """
+A minimal, third-party-free implementation of the Transmission Control Protocol 
+(TCP), based on RFC 793.
+"""
+categories = ["network-programming"]
+keywords = ["io", "network"]
+
+[dependencies]

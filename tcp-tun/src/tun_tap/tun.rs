@@ -6,7 +6,9 @@ use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::{mem, ptr};
 
-use crate::{Error, Result, errno};
+use crate::errno;
+
+use tcp_core::{Error, Result};
 
 /// Maximum Transmission Unit (`MTU`) for the TUN interface.
 ///

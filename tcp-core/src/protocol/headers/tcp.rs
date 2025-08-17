@@ -3,7 +3,9 @@ use std::io;
 use super::Ipv4Header;
 use crate::{Error, HeaderError, ParseError};
 
-/// TCP segment header (RFC 793 3.1).
+/// TCP Segment Header.
+///
+/// RFC 793 (3.1)
 ///
 /// ```text
 ///   0                   1                   2                   3
@@ -38,20 +40,14 @@ pub struct TcpHeader {
     /// the initial sequence number (ISN) and the first data octet is ISN+1.
     seq_number: u32,
     /// If the ACK control bit is set this field contains the value of the next
-    /// sequence number the sender of the segment is expecting to receive. Once
-    /// a connection is established this is always sent.
+    /// sequence number the sender of the segment is expecting to receive.
     ack_number: u32,
-    /// Data Offset: 4 bits
+    /// The data offset (4-bits) indicates the number of 32 bit words in the
+    /// TCP Header.
     ///
-    /// The number of 32 bit words in the TCP Header. This indicates where the
-    /// data begins. The TCP header (even one including options) is an integral
-    /// number of 32 bits long.
+    /// The reserved 6-bits are for future use (according to RFC 793).
     ///
-    /// Reserved:  6 bits
-    ///
-    /// Reserved for future use.  Must be zero.
-    ///
-    /// Control Bits:  6 bits (from left to right):
+    /// The control bits (6-bits) from left to right:
     ///
     /// ```text
     ///    URG:  Urgent Pointer field significant
@@ -67,19 +63,11 @@ pub struct TcpHeader {
     /// accept.
     window: u16,
     /// The checksum field is the 16 bit one's complement of the one's
-    /// complement sum of all 16 bit words in the header and text. If a segment
-    /// contains an odd number of header and text octets to be checksummed, the
-    /// last octet is padded on the right with zeros to form a 16 bit word for
-    /// checksum purposes. The pad is not transmitted as part of the segment.
-    /// While computing the checksum, the checksum field itself is replaced with
-    /// zeros.
+    /// complement sum of all 16 bit words in the header and text.
     ///
-    /// The checksum also covers a 96 bit pseudo header conceptually prefixed to
-    /// the TCP header. This pseudo header contains the Source Address, the
-    /// Destination Address, the Protocol, and TCP length. This gives the TCP
-    /// protection against misrouted segments. This information is carried in
-    /// the Internet Protocol and is transferred across the TCP/Network
-    /// interface in the arguments or results of calls by the TCP on the IP.
+    /// The checksum also covers a 96 bit pseudo header conceptually prefixed
+    /// to the TCP header and gives the TCP protection against misrouted
+    /// segments.
     ///
     /// ```text
     ///        +--------+--------+--------+--------+
@@ -90,21 +78,14 @@ pub struct TcpHeader {
     ///        |  zero  |  PTCL  |    TCP Length   |
     ///        +--------+--------+--------+--------+
     /// ```
-    ///
-    /// The TCP Length is the TCP header length plus the data length in octets
-    /// (this is not an explicitly transmitted quantity, but is computed), and
-    /// it does not count the 12 octets of the pseudo header.
     checksum: u16,
     /// This field communicates the current value of the urgent pointer as a
-    /// positive offset from the sequence number in this segment. The urgent
-    /// pointer points to the sequence number of the octet following the urgent
-    /// data. This field is only be interpreted in segments with the URG control
-    /// bit set.
+    /// positive offset from the sequence number in this segment.
     urgent_pointer: u16,
-    /// Options may occupy space at the end of the TCP header and are a
-    /// multiple of 8 bits in length. All options are included in the checksum.
+    /// Options that may occupy space at the end of the TCP header and are a
+    /// multiple of 8 bits in length.
     ///
-    /// Currently defined options include (kind indicated in octal):
+    /// Defined options (according to RFC 793) include:
     ///
     /// ```text
     ///      Kind     Length    Meaning
@@ -120,12 +101,9 @@ impl TcpHeader {
     /// Minimum length of an TCP header in bytes.
     pub const MIN_HEADER_LEN: u16 = 20;
 
-    /// Minimum data offset of a TCP header.
-    pub const MIN_DATA_OFFSET: u16 = 5;
-
     /// Maximum length of an TCP header in bytes.
     ///
-    /// The Data Offset has a minimum value of 5 (20 bytes).
+    /// The data offset has a minimum value of 5, or 20 bytes.
     ///
     /// Given its 4-bit representation:
     ///
@@ -138,8 +116,11 @@ impl TcpHeader {
     ///     1111
     /// ```
     ///
-    /// which when converted to decimal, is 15 (60 bytes).
+    /// which when converted to decimal, is 15, or 60 bytes.
     pub const MAX_HEADER_LEN: u16 = 60;
+
+    /// Minimum data offset of a TCP header.
+    pub const MIN_DATA_OFFSET: u16 = 5;
 
     /// Maximum data offset of a TCP header.
     pub const MAX_DATA_OFFSET: u16 = 15;
@@ -157,35 +138,36 @@ impl TcpHeader {
         }
     }
 
-    /// Returns the Source Port field from the TCP header.
+    /// Returns the `source port` field of the TCP header.
     pub fn src_port(&self) -> u16 {
         self.src_port
     }
 
-    /// Returns the Destination Port field from the TCP header.
+    /// Returns the `destination port` field of the TCP header.
     pub fn dst_port(&self) -> u16 {
         self.dst_port
     }
 
-    /// Returns the Sequence Number field from the TCP header.
+    /// Returns the `sequence number` field of the TCP header.
     pub fn seq_number(&self) -> u32 {
         self.seq_number
     }
 
-    /// Returns the Acknowledgment Number field from the TCP header.
+    /// Returns the `acknowledgment number` field of the TCP header.
     pub fn ack_number(&self) -> u32 {
         self.ack_number
     }
 
-    /// Sets the Acknowledgment Number field of the TCP header with the provided
-    /// value.
+    /// Sets the `acknowledgment number` field of the TCP header with the
+    /// provided value.
     pub fn set_ack_number(&mut self, ack: u32) {
         self.ack_number = ack;
     }
 
-    /// Returns the Data Offset field from the TCP header.
+    /// Returns the `data offset` field of the TCP header.
     ///
-    /// To get the header length in bytes, use [TcpHeader::header_len].
+    /// To get the header length (including options) in bytes, use
+    /// [TcpHeader::header_len].
     pub fn data_offset(&self) -> u8 {
         // Stored in the higher 4 bits.
         (self.offset_and_control_bits >> 12) as u8
@@ -193,71 +175,71 @@ impl TcpHeader {
 
     /// Returns `true` if the URG (Urgent) control bit is set in the TCP header.
     pub fn urg(&self) -> bool {
-        // Stored as the 5th bit from the LSB.
+        // Stored at the 5th bit.
         (self.offset_and_control_bits >> 5) & 1 == 1
     }
 
     /// Sets the URG (Urgent) control bit in the TCP header, if not already set.
     pub fn set_urg(&mut self) {
-        // Sets the 5th bit from the LSB.
+        // Sets the 5th bit.
         self.offset_and_control_bits |= 1 << 5;
     }
 
     /// Returns `true` if the ACK (Acknowledgment) control bit is set in the TCP
     /// header.
     pub fn ack(&self) -> bool {
-        // Stored as the 4th bit from the LSB.
+        // Stored at the 4th bit.
         (self.offset_and_control_bits >> 4) & 1 == 1
     }
 
     /// Sets the ACK (Acknowledgment) control bit in the TCP header, if not
     /// already set.
     pub fn set_ack(&mut self) {
-        // Sets the 4th bit from the LSB.
+        // Sets the 4th bit.
         self.offset_and_control_bits |= 1 << 4;
     }
 
     /// Returns `true` if the PSH (Push) control bit is set in the TCP header.
     pub fn psh(&self) -> bool {
-        // Stored as the 3rd bit from the LSB.
+        // Stored at the 3rd bit.
         (self.offset_and_control_bits >> 3) & 1 == 1
     }
 
     /// Sets the PSH (Push) control bit in the TCP header, if not already set.
     pub fn set_psh(&mut self) {
-        // Sets the 3rd bit from the LSB.
+        // Sets the 3rd bit.
         self.offset_and_control_bits |= 1 << 3;
     }
 
     /// Returns `true` if the RST (Reset) control bit is set in the TCP header.
     pub fn rst(&self) -> bool {
-        // Stored as the 2nd bit from the LSB.
+        // Stored at the 2nd bit.
         (self.offset_and_control_bits >> 2) & 1 == 1
     }
 
     /// Sets the RST (Reset) control bit in the TCP header, if not already set.
     pub fn set_rst(&mut self) {
-        // Sets the 2nd bit from the LSB.
+        // Sets the 2nd bit.
         self.offset_and_control_bits |= 1 << 2;
     }
 
     /// Returns `true` if the SYN (Synchronize) control bit is set in the TCP
     /// header.
     pub fn syn(&self) -> bool {
-        // Stored as the 1st bit from the LSB.
+        // Stored at the 1st bit.
         (self.offset_and_control_bits >> 1) & 1 == 1
     }
 
     /// Sets the SYN (Synchronize) control bit in the TCP header, if not already
     /// set.
     pub fn set_syn(&mut self) {
-        // Sets the 1st bit from the LSB.
+        // Sets the 1st bit.
         self.offset_and_control_bits |= 1 << 1;
     }
 
     /// Returns `true` if the FIN (Finish) control bit is set in the TCP header.
     pub fn fin(&self) -> bool {
-        // Stored as the LSB.
+        // Stored at the LSB.
         self.offset_and_control_bits & 1 == 1
     }
 
@@ -267,18 +249,17 @@ impl TcpHeader {
         self.offset_and_control_bits |= 1;
     }
 
-    /// Returns the Window field from the TCP header.
+    /// Returns the `window` field of the TCP header.
     pub fn window(&self) -> u16 {
         self.window
     }
 
-    /// Returns the Checksum field from the TCP header.
+    /// Returns the `checksum` field of the TCP header.
     pub fn checksum(&self) -> u16 {
         self.checksum
     }
 
-    /// Computes and updates the Checksum field of the TCP header with the
-    /// provided IPv4 header and payload.
+    /// Computes and updates the `checksum` field for the TCP header.
     pub fn set_checksum(&mut self, ip_header: &Ipv4Header, payload: &[u8]) {
         self.checksum = self.compute_checksum(ip_header, payload);
     }
@@ -288,17 +269,18 @@ impl TcpHeader {
         self.checksum == self.compute_checksum(ip_header, payload)
     }
 
-    /// Returns the Urgent Pointer field from the TCP header.
+    /// Returns the `urgent pointer` field of the TCP header.
     pub fn urgent_pointer(&self) -> u16 {
         self.urgent_pointer
     }
 
-    /// Returns the Options field from the TCP header.
+    /// Returns the `options` field of the TCP header.
     pub fn options(&self) -> TcpOptions {
         self.options
     }
 
-    /// Sets the Maximum Segment Size (MSS) option for the TCP header.
+    /// Sets the `Maximum Segment Size` (MSS) option for the TCP header with the
+    /// provided value.
     ///
     /// # Errors
     ///
@@ -307,17 +289,17 @@ impl TcpHeader {
     pub fn set_option_mss(&mut self, mss: u16) -> crate::Result<()> {
         self.options.set_mss(mss)?;
 
-        // Convert options length to representation of total bytes and add to
-        // the previous data offset.
-        let new_data_offset = ((self.options.len() >> 2) as u8 + self.data_offset()) as u16;
+        // Represent appended MSS bytes as number of 32-bit words (1) and add
+        // to the current data offset.
+        let new_data_offset = ((TcpOptions::MSS_LEN >> 2) as u8 + self.data_offset()) as u16;
 
-        // Clear previous data offset value.
+        // Clear previous data offset value, keeping the values of the reserved
+        // and control bits.
         self.offset_and_control_bits &= 0x0FFF;
 
-        // Clear the higher 12-bits of the new data offset and shift the new
-        // offset into the higher 4-bits, then combine with the previously
-        // cleared offset.
-        self.offset_and_control_bits |= (new_data_offset & 0x000F) << 12;
+        // Shift the new data offset into the higher 4-bits then combine with
+        // the previously cleared data offset.
+        self.offset_and_control_bits |= new_data_offset << 12;
 
         Ok(())
     }
@@ -327,8 +309,7 @@ impl TcpHeader {
         Self::MIN_HEADER_LEN as usize + self.options.len()
     }
 
-    /// Returns the computed checksum for the TCP header with the provided IPv4
-    /// header and payload.
+    /// Returns the computed checksum of the TCP header.
     ///
     /// The checksum algorithm is:
     ///
@@ -416,7 +397,10 @@ impl TcpHeader {
     }
 
     /// Returns the memory representation of the TCP header as a byte array in
-    /// big-endian (network) byte order and the number of bytes written.
+    /// big-endian (network) byte order.
+    ///
+    /// A buffer of size `TcpHeader::MAX_HEADER_LEN` is used as the byte array,
+    /// so the number of bytes written is also returned.
     #[allow(clippy::wrong_self_convention)]
     pub fn to_be_bytes(&self) -> ([u8; Self::MAX_HEADER_LEN as usize], usize) {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
@@ -439,15 +423,17 @@ impl TcpHeader {
     /// Reads a TCP header from the given input stream.
     pub fn read<T: io::Read>(input: &mut T) -> crate::Result<Self> {
         let mut raw_header = [0u8; Self::MAX_HEADER_LEN as usize];
-        let nbytes = input.read(&mut raw_header[..])?;
 
+        let nbytes = input.read(&mut raw_header[..])?;
         TcpHeader::try_from(&raw_header[..nbytes])
     }
 
     /// Writes the TCP header to the given output stream.
     ///
-    /// Checksum is NOT automatically computed. The callers must ensure the
-    /// checksum is computed and updated before writing.
+    /// # Note
+    ///
+    /// The caller must ensure the checksum is computed and updated before
+    /// writing the header.
     pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
         let (raw_header, nbytes) = self.to_be_bytes();
         output.write_all(&raw_header[..nbytes])?;
@@ -464,6 +450,7 @@ impl TryFrom<&[u8]> for TcpHeader {
             return Err(Error::Parse(ParseError::InvalidBufferLength {
                 provided: header_raw.len(),
                 min: Self::MIN_HEADER_LEN,
+                max: Self::MAX_HEADER_LEN,
             }));
         }
 
@@ -564,28 +551,28 @@ impl Default for TcpHeader {
     }
 }
 
-/// Options within TCP header.
+/// Options within a TCP header.
 #[derive(Debug, Clone, Copy)]
 pub struct TcpOptions {
+    /// The total number of bytes occupying the buffer.
     len: usize,
-    buf: [u8; 40],
+    /// Fixed-size array of raw options bytes.
+    buf: [u8; Self::MAX_OPTIONS_LEN],
 }
 
 impl TcpOptions {
     /// Maximum length of TCP options in bytes.
     pub const MAX_OPTIONS_LEN: usize = 40;
 
+    /// Length of MSS option in bytes.
+    pub const MSS_LEN: usize = 4;
+
     /// Creates a new empty TCP options.
     pub fn new() -> Self {
         Self {
             len: 0,
-            buf: [0u8; 40],
+            buf: [0u8; Self::MAX_OPTIONS_LEN],
         }
-    }
-
-    /// Returns the length of the TCP options in bytes.
-    pub fn len(&self) -> usize {
-        self.len
     }
 
     /// Returns the Maximum Segment Size (MSS) value from the TCP options, if
@@ -602,7 +589,7 @@ impl TcpOptions {
                     continue;
                 }
                 OptionKind::MSS => {
-                    // RFC 793 (3.1):
+                    // RFC 793 (3.1)
                     //
                     // ```text
                     //          1        2        3         4
@@ -613,7 +600,7 @@ impl TcpOptions {
                     //           |-- Here         Want these bytes
                     // ```
 
-                    // Length for MSS option must be 0x04.
+                    // Length for MSS option must be 0x04 (4 bytes).
                     if opts_slice[i + 1] != 0x04 {
                         break;
                     }
@@ -626,8 +613,8 @@ impl TcpOptions {
         None
     }
 
-    /// Sets the Maximum Segment Size (MSS) value for the TCP options, appending
-    /// it to the current options buffer.
+    /// Appends the Maximum Segment Size (MSS) option in the TCP options using
+    /// the provided value.
     ///
     /// # Errors
     ///
@@ -638,32 +625,35 @@ impl TcpOptions {
             // Skip setting MSS option is it already exists...
         } else {
             if mss == 0 {
-                return Err(Error::Header(HeaderError::InvalidMssOption(mss)));
+                return Err(Error::Header(HeaderError::InvalidMssOption));
             }
-
-            const MSS_LEN: usize = 4;
 
             let opts_len = self.len();
 
-            if opts_len + MSS_LEN > Self::MAX_OPTIONS_LEN {
+            if opts_len + Self::MSS_LEN > Self::MAX_OPTIONS_LEN {
                 return Err(Error::Header(HeaderError::InsufficientOptionSpace {
-                    attempted: (opts_len + MSS_LEN),
-                    current: opts_len,
-                    max: Self::MAX_OPTIONS_LEN,
+                    attempted_len: (opts_len + Self::MSS_LEN),
+                    current_len: opts_len,
+                    max_len: Self::MAX_OPTIONS_LEN,
                 }));
             }
 
-            let mut mss_option = [0u8; MSS_LEN];
+            let mut mss_option = [0u8; Self::MSS_LEN];
 
             mss_option[0] = OptionKind::MSS as u8;
             mss_option[1] = 0x04;
             mss_option[2..4].copy_from_slice(&mss.to_be_bytes());
 
-            self.buf[opts_len..opts_len + MSS_LEN].copy_from_slice(&mss_option);
-            self.len += MSS_LEN;
+            self.buf[opts_len..opts_len + Self::MSS_LEN].copy_from_slice(&mss_option);
+            self.len += Self::MSS_LEN;
         }
 
         Ok(())
+    }
+
+    /// Returns the length of the TCP options in bytes.
+    pub fn len(&self) -> usize {
+        self.len
     }
 
     /// Returns `true` if the TCP options contains no bytes.
@@ -764,9 +754,7 @@ pub enum OptionKind {
     ///
     /// If this option is present, then it communicates the maximum receive
     /// segment size at the TCP which sends this segment. This field must only
-    /// be sent in the initial connection request
-    /// (i.e., in segments with the SYN control bit set). If this option is not
-    /// used, any segment size is allowed.
+    /// be sent in the initial connection request (i.e., in segments with the SYN control bit set).
     MSS = 0o02,
 }
 
@@ -775,7 +763,8 @@ impl From<u8> for OptionKind {
         match val {
             1 => Self::NOP,
             2 => Self::MSS,
-            // Everything else is considered the end of the options list.
+            // Currently everything else is considered the end of the options
+            // list.
             _ => Self::EOL,
         }
     }
@@ -889,7 +878,7 @@ mod tests {
             [192, 168, 0, 44],
             header.header_len() as u16,
             64,
-            crate::net::headers::Protocol::TCP,
+            crate::protocol::headers::Protocol::TCP,
         )
         .unwrap();
 
@@ -984,11 +973,19 @@ mod tests {
         assert!(header.is_ok());
         let mut header = header.unwrap();
 
+        // Ensure other bits are not clobbered.
+        header.set_syn();
+        header.set_psh();
+        header.set_urg();
+
         assert_eq!(header.data_offset(), 5);
         assert_eq!(header.options.mss(), None);
 
         assert!(header.set_option_mss(1460).is_ok());
 
+        assert!(header.syn());
+        assert!(header.psh());
+        assert!(header.urg());
         assert_eq!(header.data_offset(), 6);
         assert_eq!(header.options.mss(), Some(1460));
 

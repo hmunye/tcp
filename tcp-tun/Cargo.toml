@@ -1,0 +1,17 @@
+[package]
+name = "tcp-tun"
+version = "0.1.0"
+edition = "2024"
+authors = ["Huseen Munye <>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/hmunye/tcp"
+description = """
+Linux-only crate enabling TUN/TAP networking for user-space TCP communication using `tcp-core`.
+"""
+categories = ["network-programming"]
+keywords = ["io", "network", "non-blocking"]
+
+[dependencies]
+libc = "0.2.174"
+tcp-core = { path = "../tcp-core" }

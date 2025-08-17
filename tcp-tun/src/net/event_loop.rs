@@ -8,13 +8,18 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
 use std::{io, mem, ptr};
 
-use crate::net::headers::{Ipv4Header, Protocol, TcpHeader};
-use crate::net::protocol::fsm::{
-    ConnectionState, MAX_RETRANSMIT_ATTEMPTS, MSL, RTO, Socket, SocketAddr, TCB,
-};
+use crate::errno;
 use crate::tun_tap::tun::{MTU_SIZE, Tun};
-use crate::{Error, Result, errno};
-use crate::{debug, error, info, warn};
+
+use tcp_core::protocol::fsm::{
+    ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, Socket, SocketAddr, TCB,
+};
+use tcp_core::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
+use tcp_core::{Error, Result};
+use tcp_core::{debug, error, info, warn};
+
+/// Maximum Transmission Unit.
+const MTU_SIZE: usize = 1504;
 
 /// Total number of events returned each tick (event loop cycle).
 const EPOLL_MAX_EVENTS: i32 = 3;
@@ -121,7 +126,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                                 // If the maximum number of retransmissions is
                                 // reached, the connection's state transitions
                                 // to CLOSED.
-                                match conn.on_conn_tick(nic) {
+                                match conn.on_conn_tick() {
                                     Ok(timer) => {
                                         if conn.state == ConnectionState::CLOSED {
                                             let buf = &conn.usr_buf.make_contiguous();
@@ -163,7 +168,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                     //
                     // `rearm_time` can never be 0, since that will disable the
                     // `timerfd`.
-                    if !(1..=RTO * (1 << MAX_RETRANSMIT_ATTEMPTS)).contains(&rearm_time) {
+                    if !(1..=RTO * (1 << MAX_RETRANSMIT_LIMIT)).contains(&rearm_time) {
                         // Default to rearming timer expiring to RTO.
                         rearm_time = RTO;
                     }
@@ -239,7 +244,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
 
                                     match connections.entry(socket) {
                                         Entry::Vacant(entry) => {
-                                            match TCB::on_conn_req(nic, &iph, &tcph) {
+                                            match TCB::on_conn_req(&iph, &tcph) {
                                                 Ok(opt) => {
                                                     if let Some(conn) = opt {
                                                         entry.insert(conn);
@@ -253,9 +258,8 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                                             }
                                         }
                                         Entry::Occupied(mut conn) => {
-                                            if let Err(Error::Io(err)) = conn
-                                                .get_mut()
-                                                .on_conn_packet(nic, &iph, &tcph, payload)
+                                            if let Err(Error::Io(err)) =
+                                                conn.get_mut().on_conn_packet(&iph, &tcph, payload)
                                             {
                                                 match err.kind() {
                                                     io::ErrorKind::ConnectionReset

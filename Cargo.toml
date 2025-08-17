@@ -1,14 +1,3 @@
-[package]
-name = "tcp"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-authors = ["Huseen Munye"]
-description = """
-TCP implementation in user-space, built for learning purposes, using the TUN/TAP interface.
-"""
-repository = "https://github.com/hmunye/tcp"
-readme = "README.md"
-
-[dependencies]
-libc = "0.2.174"
+[workspace]
+resolver = "3"
+members = ["tcp-core", "tcp-tun", "tcp-wasm"]

@@ -5,5 +5,4 @@
 //! management, and event loop for processing raw packet I/O, timers, and
 //! signals.
 
-pub mod headers;
-pub mod protocol;
+pub mod event_loop;

@@ -2,79 +2,51 @@ use std::io;
 
 use crate::{Error, HeaderError, ParseError};
 
-/// IPv4 datagram header (RFC 791 3.1).
+/// IPv4 Datagram Header.
+///
+/// # Note
+///
+/// IPv4 options are currently not supported.
+///
+/// RFC 791 (3.1)
 ///
 /// ```text
-///   0                   1                   2                   3
-///    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   |Version|  IHL  |Type of Service|          Total Length         |
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   |         Identification        |Flags|      Fragment Offset    |
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   |  Time to Live |    Protocol   |         Header Checksum       |
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   |                       Source Address                          |
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   |                    Destination Address                        |
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-///   |                    Options                    |    Padding    |
-///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///  0                   1                   2                   3   
+///  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |Version|  IHL  |Type of Service|          Total Length         |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |         Identification        |Flags|      Fragment Offset    |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |  Time to Live |    Protocol   |         Header Checksum       |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                       Source Address                          |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                    Destination Address                        |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                    Options                    |    Padding    |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
-///
-/// IPv4 options currently are unsupported.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ipv4Header {
-    /// The Version field indicates the format of the internet header.
+    /// The version field indicates the format of the internet header.
     ///
     /// Internet Header Length (IHL) is the length of the internet header in
-    /// 32 bit words, and thus points to the beginning of the data. Note that
-    /// the minimum value for a correct header is 5.
+    /// 32-bit words.
     version_ihl: u8,
-    /// The Type of Service provides an indication of the abstract parameters
+    /// Type of service provides an indication of the abstract parameters
     /// of the quality of service desired. These parameters are to be used to
-    /// guide the selection of the actual service parameters when transmitting a
-    /// datagram through a particular network. Several networks offer service
-    /// precedence, which somehow treats high precedence traffic as more
-    /// important than other traffic (generally by accepting only traffic above
-    /// a certain precedence at time of high load). The major choice is a three
-    /// way tradeoff between low-delay, high-reliability, and high-throughput.
-    ///
-    /// ```text
-    ///      Bits 0-2:  Precedence.
-    ///      Bit    3:  0 = Normal Delay,      1 = Low Delay.
-    ///      Bits   4:  0 = Normal Throughput, 1 = High Throughput.
-    ///      Bits   5:  0 = Normal Reliability, 1 = High Reliability.
-    ///      Bit  6-7:  Reserved for Future Use.
-    ///
-    ///         0     1     2     3     4     5     6     7
-    ///      +-----+-----+-----+-----+-----+-----+-----+-----+
-    ///      |                 |     |     |     |     |     |
-    ///      |   PRECEDENCE    |  D  |  T  |  R  |  0  |  0  |
-    ///      |                 |     |     |     |     |     |
-    ///      +-----+-----+-----+-----+-----+-----+-----+-----+
-    ///
-    ///        Precedence
-    ///
-    ///          111 - Network Control
-    ///          110 - Internetwork Control
-    ///          101 - CRITIC/ECP
-    ///          100 - Flash Override
-    ///          011 - Flash
-    ///          010 - Immediate
-    ///          001 - Priority
-    ///          000 - Routine
-    /// ```
+    /// guide the selection of the actual service parameters when transmitting
+    /// a datagram through a particular network.
     tos: u8,
-    /// Total Length is the length of the datagram, measured in octets,
-    /// including internet header and data. This field allows the length of a
-    /// datagram to be up to 65,535 octets ([u16::MAX]).
+    /// Total length is the length of the datagram, measured in octets,
+    /// including internet header and payload.
     total_len: u16,
     /// An identifying value assigned by the sender to aid in assembling the
     /// fragments of a datagram.
     id: u16,
-    /// Various Control Flags.
+    /// Control flags:
     ///
     /// ```text
     ///      Bit 0: reserved, must be zero
@@ -88,20 +60,14 @@ pub struct Ipv4Header {
     ///        +---+---+---+
     /// ```
     ///
-    /// Fragment offset indicates where in the datagram this fragment belongs.
-    /// The fragment offset is measured in units of 8 octets (64 bits). The
-    /// first fragment has offset zero.
+    /// Fragment offset indicates where in the datagram this fragment belongs,
+    /// measured in units of 8 octets (64-bits).
     flags_and_offset: u16,
-    /// This field indicates the maximum time the datagram is allowed to remain
-    /// in the internet system. If this field contains the value zero, then the
-    /// datagram must be destroyed. This field is modified in internet header
-    /// processing. The time is measured in units of seconds, but since every
-    /// module that processes a datagram must decrease the TTL by at least one
-    /// even if it process the datagram in less than a second, the TTL must be
-    /// thought of only as an upper bound on the time a datagram may exist.
+    /// Indicates the maximum time the datagram is allowed to remain in the
+    /// internet system.
     ttl: u8,
-    /// This field indicates the next level protocol used in the data portion of
-    /// the internet datagram.
+    /// Indicates the next level protocol used in the data portion of the
+    /// internet datagram.
     protocol: Protocol,
     /// A checksum on the header only. Since some header fields change (e.g.,
     /// time to live), this is recomputed and verified at each point that the
@@ -119,7 +85,7 @@ impl Ipv4Header {
 
     /// Maximum length of an IPv4 header in bytes.
     ///
-    /// The IHL (Internet Header Length) has a minimum value of 5 (20 bytes).
+    /// The IHL has a minimum value of 5, or 20 bytes.
     ///
     /// Given its 4-bit representation:
     ///
@@ -132,10 +98,10 @@ impl Ipv4Header {
     ///     1111
     /// ```
     ///
-    /// which when converted to decimal, is 15 (60 bytes).
+    /// which when converted to decimal, is 15, or 60 bytes.
     pub const MAX_HEADER_LEN: u16 = 60;
 
-    /// Maximum payload length in bytes.
+    /// Maximum payload length in bytes, accounting for the header length.
     pub const MAX_PAYLOAD_LEN: u16 = u16::MAX - Self::MIN_HEADER_LEN;
 
     /// Creates a new IPv4 header with the specified source and destination
@@ -170,14 +136,13 @@ impl Ipv4Header {
         })
     }
 
-    /// Returns the Version field from the IPv4 header.
+    /// Returns the `version` field of the IPv4 header.
     pub fn version(&self) -> u8 {
         // Stored in the higher 4 bits.
         self.version_ihl >> 4
     }
 
-    /// Returns the IHL (Internet Header Length) field from the IPv4 header,
-    /// specified 32-bit (4-byte) units.
+    /// Returns the `IHL` field of the IPv4 header, specified 32-bit words.
     ///
     /// To get the header length in bytes, use [Ipv4Header::header_len].
     pub fn ihl(&self) -> u8 {
@@ -185,86 +150,17 @@ impl Ipv4Header {
         self.version_ihl & 0xF
     }
 
-    /// Returns the Type of Service field from the IPv4 header.
+    /// Returns the `type of service` field of the IPv4 header.
     pub fn tos(&self) -> u8 {
         self.tos
     }
 
-    /// Returns the Total Length field from the IPv4 header.
+    /// Returns the `total length` field of the IPv4 header.
     pub fn total_len(&self) -> u16 {
         self.total_len
     }
 
-    /// Returns the Identification field from the IPv4 header.
-    pub fn id(&self) -> u16 {
-        self.id
-    }
-
-    /// Returns `true` if the DF (Don't Fragment) bit is set in the IPv4 header.
-    pub fn dont_fragment(&self) -> bool {
-        // Stored as the 14th bit (counting from the LSB).
-        (self.flags_and_offset >> 14) & 1 == 1
-    }
-
-    /// Returns `true` if the MF (More Fragments) bit is set in the IPv4 header.
-    pub fn more_fragments(&self) -> bool {
-        // Stored as the 13th bit (counting from the LSB).
-        (self.flags_and_offset >> 13) & 1 == 1
-    }
-
-    /// Returns the Fragment Offset field from the IPv4 header.
-    pub fn fragment_offset(&self) -> u16 {
-        // Stored in the lower 13 bits.
-        self.flags_and_offset & 0x1FFF
-    }
-
-    /// Returns the Time to Live field from the IPv4 header.
-    pub fn ttl(&self) -> u8 {
-        self.ttl
-    }
-
-    /// Returns the Protocol field from the IPv4 header.
-    pub fn protocol(&self) -> Protocol {
-        self.protocol
-    }
-
-    /// Returns the Header Checksum field from the IPv4 header.
-    pub fn header_checksum(&self) -> u16 {
-        self.header_checksum
-    }
-
-    /// Computes and updates the Header Checksum field for the IPv4 header.
-    pub fn set_header_checksum(&mut self) {
-        self.header_checksum = self.compute_header_checksum();
-    }
-
-    /// Returns `true` if the IPv4 header checksum is valid.
-    pub fn is_valid_checksum(&self) -> bool {
-        self.header_checksum == self.compute_header_checksum()
-    }
-
-    /// Returns the Source Address field from the IPv4 header.
-    pub fn src(&self) -> [u8; 4] {
-        self.src_addr
-    }
-
-    /// Returns the Destination Address field from the IPv4 header.
-    pub fn dst(&self) -> [u8; 4] {
-        self.dst_addr
-    }
-
-    /// Returns the length of the IPv4 header in bytes, not including payload.
-    pub fn header_len(&self) -> usize {
-        Self::MIN_HEADER_LEN as usize
-    }
-
-    /// Returns the payload length of the IPv4 header.
-    pub fn payload_len(&self) -> u16 {
-        // SAFETY: total_len >= IHL << 2 is checked when parsing.
-        self.total_len - Self::MIN_HEADER_LEN
-    }
-
-    /// Sets the Total Length field of the IPv4 header given a payload length.
+    /// Sets the `total length` field of the IPv4 header given a payload length.
     ///
     /// # Errors
     ///
@@ -283,7 +179,78 @@ impl Ipv4Header {
         Ok(())
     }
 
-    /// Returns the computed checksum for the IPv4 header.
+    /// Returns the `identification` field of the IPv4 header.
+    pub fn id(&self) -> u16 {
+        self.id
+    }
+
+    /// Returns `true` if the `DF` (Don't Fragment) bit is set in the IPv4
+    /// header.
+    pub fn dont_fragment(&self) -> bool {
+        // Stored at the 14th bit.
+        (self.flags_and_offset >> 14) & 1 == 1
+    }
+
+    /// Returns `true` if the `MF` (More Fragments) bit is set in the IPv4
+    /// header.
+    pub fn more_fragments(&self) -> bool {
+        // Stored at the 13th bit.
+        (self.flags_and_offset >> 13) & 1 == 1
+    }
+
+    /// Returns the `fragment offset` field of the IPv4 header.
+    pub fn fragment_offset(&self) -> u16 {
+        // Stored in the lower 13 bits.
+        self.flags_and_offset & 0x1FFF
+    }
+
+    /// Returns the `time to live` field of the IPv4 header.
+    pub fn ttl(&self) -> u8 {
+        self.ttl
+    }
+
+    /// Returns the `protocol` field of the IPv4 header.
+    pub fn protocol(&self) -> Protocol {
+        self.protocol
+    }
+
+    /// Returns the `header checksum` field of the IPv4 header.
+    pub fn header_checksum(&self) -> u16 {
+        self.header_checksum
+    }
+
+    /// Computes and updates the header checksum for the IPv4 header.
+    pub fn set_header_checksum(&mut self) {
+        self.header_checksum = self.compute_header_checksum();
+    }
+
+    /// Returns `true` if the IPv4 header checksum is valid.
+    pub fn is_valid_checksum(&self) -> bool {
+        self.header_checksum == self.compute_header_checksum()
+    }
+
+    /// Returns the `source address` field of the IPv4 header.
+    pub fn src(&self) -> [u8; 4] {
+        self.src_addr
+    }
+
+    /// Returns the `destination address` field of the IPv4 header.
+    pub fn dst(&self) -> [u8; 4] {
+        self.dst_addr
+    }
+
+    /// Returns the length of the IPv4 header in bytes, not including payload.
+    pub fn header_len(&self) -> usize {
+        Self::MIN_HEADER_LEN as usize
+    }
+
+    /// Returns the payload length of the IPv4 header.
+    pub fn payload_len(&self) -> u16 {
+        // SAFETY: total_len >= (IHL << 2) is checked when parsing.
+        self.total_len - Self::MIN_HEADER_LEN
+    }
+
+    /// Returns the computed checksum of the IPv4 header.
     ///
     /// The checksum algorithm is:
     ///
@@ -343,15 +310,17 @@ impl Ipv4Header {
     /// Reads an IPv4 header from the given input stream.
     pub fn read<T: io::Read>(input: &mut T) -> crate::Result<Self> {
         let mut raw_header = [0u8; Self::MIN_HEADER_LEN as usize];
-        input.read_exact(&mut raw_header[..])?;
 
+        input.read_exact(&mut raw_header[..])?;
         Ipv4Header::try_from(&raw_header[..])
     }
 
     /// Writes the IPv4 header to the given output stream.
     ///
-    /// Checksum is NOT automatically computed. The callers must ensure the
-    /// checksum is computed and updated before writing.
+    /// # Note
+    ///
+    /// The caller must ensure the checksum is computed and updated before
+    /// writing the header.
     pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
         output.write_all(&self.to_be_bytes())?;
 
@@ -367,6 +336,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
             return Err(Error::Parse(ParseError::InvalidBufferLength {
                 provided: header_raw.len(),
                 min: Self::MIN_HEADER_LEN,
+                max: Self::MAX_HEADER_LEN,
             }));
         }
 
