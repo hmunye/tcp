@@ -3,10 +3,10 @@
 A **user-space Transmission Control Protocol (TCP) implementation in Rust**, designed for 
 experimentation and learning.
 
-The project is organized as a Cargo workspace with three crates:
+This project is organized as a Cargo workspace with three crates:
 
-- **`tcp-core`**: A minimal, third-party-free TCP (RFC 793) crate that implements the state machine, 
-packet parsing/serialization, and segment construction
+- **`tcp-core`**: A minimal, dependency-free TCP (primarily RFC 793) crate that implements the state 
+machine, packet parsing/serialization, and segment construction
 
 - **`tcp-tun`**: Linux-only crate that integrates with the network stack via TUN/TAP, using `epoll` 
 for single-threaded, non-blocking I/O

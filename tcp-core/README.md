@@ -1,7 +1,7 @@
 # tcp-core
 
-A minimal, third-party-free implementation of the Transmission Control Protocol (TCP), based on
-[RFC 793](https://www.rfc-editor.org/rfc/rfc793).
+A minimal, dependency-free implementation of the Transmission Control Protocol (TCP), primarily based 
+on [RFC 793](https://www.rfc-editor.org/rfc/rfc793).
 
 > [!WARNING]  
 > This project is experimental and not intended for production use.
@@ -35,7 +35,9 @@ cargo t
 
 This implementation currently omits several features and behaviors, including:
 
-- Assumes IP packets are fully reassembled (no handling of IP fragmentation)
+- Handling of buffered application data (currently buffered, not drained)
+- No zero-window probing
+- No Initial Send Sequence Number (ISS) randomization
 - No congestion control algorithms (e.g., slow start, fast retransmit)
 - No support for Selective Acknowledgment (SACK)
 - No window scaling

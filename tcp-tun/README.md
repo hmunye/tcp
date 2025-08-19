@@ -6,9 +6,17 @@ Linux-only crate enabling TUN/TAP networking for user-space TCP via `tcp-core`, 
 [std::net]: https://doc.rust-lang.org/std/net/index.html
 
 ## TOC
+* [Limitations](#limitations)
 * [Quick Start](#quick-start)
 * [License](#license)
 * [References](#references)
+
+## Limitations
+
+This implementation currently omits the following features and behaviors:
+
+- Assumes IP packets are fully reassembled (no handling of IP fragmentation)
+- No user-timeout support
 
 ## Quick Start
 

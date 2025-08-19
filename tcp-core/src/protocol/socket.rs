@@ -1,4 +1,4 @@
-//! Definitions for representing unique TCP connections through socket addresses.
+//! Representing unique TCP connections through socket addresses.
 
 use std::fmt;
 

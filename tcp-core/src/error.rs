@@ -9,7 +9,7 @@ pub type Result<T> = result::Result<T, Error>;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Error reading or writing an IPv4/TCP header.
+    /// Error while reading or writing an IPv4/TCP header or segment.
     Io(io::Error),
     /// Error parsing a TCP segment.
     Parse(ParseError),

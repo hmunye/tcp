@@ -7,8 +7,8 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/hmunye/tcp"
 description = """
-A minimal, third-party-free implementation of the Transmission Control Protocol 
-(TCP), based on RFC 793.
+A minimal, dependency-free implementation of the Transmission Control Protocol 
+(TCP), primarily based on RFC 793.
 """
 categories = ["network-programming"]
 keywords = ["io", "network"]

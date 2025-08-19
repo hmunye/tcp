@@ -7,6 +7,8 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/hmunye/tcp"
 description = """
+WebAssembly wrapper exposing tcp-core to a Svelte UI for interactive TCP 
+simulations.
 """
 categories = ["wasm"]
 keywords = ["webassembly", "wasm", "network"]
