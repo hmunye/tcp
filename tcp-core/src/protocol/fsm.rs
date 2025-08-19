@@ -288,8 +288,6 @@ impl TCB {
         iph: &Ipv4Header,
         tcph: &TcpHeader,
     ) -> Result<(Option<Self>, Option<TcpSegment>)> {
-        log_segment(iph, tcph, &[]);
-
         // An incoming RST should be ignored.
         if tcph.rst() {
             debug!("(LISTEN) received RST: ignoring");
@@ -405,7 +403,7 @@ impl TCB {
     ///
     /// Returns an error if any `PSH_ACK` segments could not be constructed or
     /// the connection is in an invalid state for sending data.
-    pub fn conn_send(&mut self, buf: &[u8]) -> Result<VecDeque<TcpSegment>> {
+    pub fn send(&mut self, buf: &[u8]) -> Result<VecDeque<TcpSegment>> {
         if !matches!(
             self.state,
             ConnectionState::ESTABLISHED | ConnectionState::CLOSE_WAIT,
@@ -472,7 +470,7 @@ impl TCB {
     ///
     /// Returns an error if the connection is not in a valid state to receive
     /// data.
-    pub fn conn_recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         if !matches!(
             self.state,
             ConnectionState::ESTABLISHED
@@ -507,7 +505,7 @@ impl TCB {
     /// Returns an error if the `FIN_ACK` segment could not be constructed or
     /// the connection is in the `SYN_SENT` state, indicating the connection
     /// should be closed immediately.
-    pub fn conn_close(&mut self) -> Result<Option<TcpSegment>> {
+    pub fn close(&mut self) -> Result<Option<TcpSegment>> {
         match self.state {
             ConnectionState::SYN_SENT => {
                 warn!(
@@ -638,12 +636,7 @@ impl TCB {
     /// Returns an error if the connection's state is `LISTEN` or `CLOSED`, the
     /// connection was terminated by the peer, or any segments to transmit could
     /// not be constructed.
-    pub fn on_conn_packet(
-        &mut self,
-        iph: &Ipv4Header,
-        tcph: &TcpHeader,
-        payload: &[u8],
-    ) -> Result<Option<TcpSegment>> {
+    pub fn on_packet(&mut self, tcph: &TcpHeader, payload: &[u8]) -> Result<Option<TcpSegment>> {
         // This should never happen, but just in case...
         if let ConnectionState::CLOSED | ConnectionState::LISTEN = self.state {
             error!(
@@ -657,8 +650,6 @@ impl TCB {
             )));
         }
 
-        log_segment(iph, tcph, payload);
-
         let seqn = tcph.seq_number();
         let ackn = tcph.ack_number();
 
@@ -666,6 +657,12 @@ impl TCB {
             // Do not process an incoming FIN since SEG.SEQ cannot be validated.
             if tcph.fin() {
                 debug!("[{}] (SYN_SENT) received FIN: ignoring", self.sock);
+                return Ok(None);
+            }
+
+            // Just for robustness...
+            if tcph.psh() {
+                debug!("[{}] (SYN_SENT) received PSH: ignoring", self.sock);
                 return Ok(None);
             }
 
@@ -1269,7 +1266,7 @@ impl TCB {
     /// The caller can determine if a connection has constructed a `RST` and
     /// is terminating the connection if the connection state is transitioned to
     /// `CLOSED`. A `RST` segment returned should be transmitted to the peer.
-    pub fn on_conn_tick(&mut self) -> (Duration, VecDeque<TcpSegment>) {
+    pub fn on_tick(&mut self) -> (Duration, VecDeque<TcpSegment>) {
         if !self.retransmit_buf.is_empty() {
             // Track the segment with the closest time to expire.
             let mut nearest_timer = Duration::MAX;
@@ -1536,7 +1533,7 @@ impl TCB {
 
 /// Logs an incoming TCP segment (debug builds only).
 #[cfg(debug_assertions)]
-fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
+pub fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
     debug!(
         "received ipv4 packet   | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?} \
          received tcp segment   | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?} \
@@ -1593,4 +1590,143 @@ fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
 #[inline]
 fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
     wrapping_lt(start, x) && wrapping_lt(x, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Socket addresses used for tests.
+    const TEST_SOCKET: Socket = Socket {
+        src: SocketAddr {
+            addr: [192, 168, 0, 4],
+            port: 12345,
+        },
+        dst: SocketAddr {
+            addr: [192, 168, 0, 5],
+            port: 80,
+        },
+    };
+
+    /// Creates an arbitrary TCP segment.
+    ///
+    /// Source and destination socket addresses are hard coded as they do not
+    /// affect the state machine logic. Correct connection handling is
+    /// implemented at the I/O level instead.
+    fn arb_segment() -> impl Strategy<Value = TcpSegment> {
+        (
+            any::<u32>(),  // sequence number
+            any::<u32>(),  // acknowledgment number
+            any::<u16>(),  // window size
+            any::<bool>(), // URG flag
+            any::<bool>(), // PSH flag
+            any::<bool>(), // ACK flag
+            any::<bool>(), // RST flag
+            any::<bool>(), // SYN flag
+            any::<bool>(), // FIN flag
+            // payload
+            prop::collection::vec(any::<u8>(), 0..128),
+        )
+            .prop_map(|(seqn, ackn, wnd, urg, psh, ack, rst, syn, fin, payload)| {
+                let mut tcph =
+                    TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, seqn, wnd);
+                tcph.set_ack_number(ackn);
+
+                if urg {
+                    tcph.set_urg();
+                }
+                if psh {
+                    tcph.set_psh();
+                }
+                if ack {
+                    tcph.set_ack();
+                }
+                if rst {
+                    tcph.set_rst();
+                }
+                if syn {
+                    tcph.set_syn();
+                }
+                if fin {
+                    tcph.set_fin();
+                }
+
+                let ip = Ipv4Header::new(
+                    TEST_SOCKET.dst.addr,
+                    TEST_SOCKET.src.addr,
+                    (tcph.header_len() + payload.len()) as u16,
+                    64,
+                    Protocol::TCP,
+                )
+                .unwrap();
+
+                TcpSegment::new(ip, tcph, &payload)
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn fsm_client_handshake_invariants(seg in arb_segment()) {
+            let (mut conn, _syn) = TCB::open_conn_active(TEST_SOCKET).unwrap();
+
+            // Retransmission buffer should not be empty (contains SYN).
+            prop_assert!(!conn.retransmit_buf.is_empty());
+
+            // SND.NXT is always >= SND.UNA.
+            prop_assert!(conn.snd.nxt >= conn.snd.una);
+
+            // RCV.NXT is always >= RCV.IRS.
+            prop_assert!(conn.rcv.nxt >= conn.rcv.irs);
+
+            let _maybe_reply = conn.on_packet(&seg.tcp, &seg.payload);
+
+            if conn.state == ConnectionState::ESTABLISHED {
+                // Only a `SYN_ACK` segment could transition us from
+                // `SYN_SENT` => `ESTABLISHED`.
+                //
+                // `URG` flag is ignored.
+                prop_assert!(
+                    !seg.tcp.psh() &&
+                    seg.tcp.ack() &&
+                    !seg.tcp.rst() &&
+                    seg.tcp.syn() &&
+                    !seg.tcp.fin()
+                );
+
+                // Only the initial SYN should be acknowledged.
+                prop_assert_eq!(seg.tcp.ack_number(), conn.snd.iss + 1);
+
+                // Retransmission buffer should be cleared.
+                let _ = conn.on_tick();
+                prop_assert!(conn.retransmit_buf.is_empty());
+            }
+
+            if conn.state == ConnectionState::SYN_RECEIVED {
+                // Only a `SYN` segment could transition us from
+                // `SYN_SENT` => `SYN_RECEIVED`.
+                //
+                // `URG` flag is ignored.
+                prop_assert!(
+                    !seg.tcp.psh() &&
+                    !seg.tcp.ack() &&
+                    !seg.tcp.rst() &&
+                    seg.tcp.syn() &&
+                    !seg.tcp.fin()
+                );
+
+                // Retransmission buffer should be not be empty.
+                let _ = conn.on_tick();
+                prop_assert!(!conn.retransmit_buf.is_empty());
+            }
+
+            // Ensure only valid state transitions.
+            prop_assert!(matches!(conn.state,
+                ConnectionState::SYN_SENT |
+                ConnectionState::SYN_RECEIVED |
+                ConnectionState::ESTABLISHED |
+                ConnectionState::CLOSED
+            ));
+        }
+    }
 }
