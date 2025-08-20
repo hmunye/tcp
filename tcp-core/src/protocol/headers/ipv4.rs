@@ -28,7 +28,7 @@ use crate::{Error, HeaderError, ParseError};
 /// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv4Header {
     /// The version field indicates the format of the internet header.
     ///
@@ -549,6 +549,19 @@ impl TryFrom<u8> for Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn ipv4_header_parsing_no_panic(header_bytes in prop::collection::vec(any::<u8>(), 0..Ipv4Header::MAX_HEADER_LEN as usize)) {
+            if let Ok(header) = Ipv4Header::try_from(&header_bytes[..]) {
+                let bytes = header.to_be_bytes();
+                if let Ok(header_parsed) = Ipv4Header::try_from(&bytes[..]) {
+                    prop_assert_eq!(header, header_parsed);
+                }
+            }
+        }
+    }
 
     #[test]
     fn ipv4_header_basic_valid() {

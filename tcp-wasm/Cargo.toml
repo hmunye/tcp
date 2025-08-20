@@ -13,5 +13,8 @@ simulations.
 categories = ["wasm"]
 keywords = ["webassembly", "wasm", "network"]
 
+[package.metadata.docs.rs]
+no-deps = true
+
 [dependencies]
 tcp-core = { path = "../tcp-core" }

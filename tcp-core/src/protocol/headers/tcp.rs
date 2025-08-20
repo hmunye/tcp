@@ -29,7 +29,7 @@ use crate::{Error, HeaderError, ParseError};
 ///    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TcpHeader {
     /// The source port number.
     src_port: u16,
@@ -552,7 +552,7 @@ impl Default for TcpHeader {
 }
 
 /// Options within a TCP header.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TcpOptions {
     /// The total number of bytes occupying the buffer.
     len: usize,
@@ -773,6 +773,19 @@ impl From<u8> for OptionKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn tcp_header_parsing_no_panic(header_bytes in prop::collection::vec(any::<u8>(), 0..TcpHeader::MAX_HEADER_LEN as usize)) {
+            if let Ok(header) = TcpHeader::try_from(&header_bytes[..]) {
+                let (bytes, nbytes) = header.to_be_bytes();
+                if let Ok(header_parsed) = TcpHeader::try_from(&bytes[..nbytes]) {
+                    prop_assert_eq!(header, header_parsed);
+                }
+            }
+        }
+    }
 
     #[test]
     fn tcp_header_basic_valid() {
