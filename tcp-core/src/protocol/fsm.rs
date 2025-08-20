@@ -272,7 +272,7 @@ impl TCB {
     }
 
     /// Processes an incoming TCP connection request for which no connection
-    /// state exists, returning a newly created TCB and `SYN_ACK` segment pair.
+    /// state exists, returning a newly created TCB and `SYN+ACK` segment pair.
     ///
     /// - If the incoming segment contains an `RST` or no `SYN`, no TCB or TCP
     ///   segment is returned.
@@ -282,7 +282,7 @@ impl TCB {
     ///
     /// # Errors
     ///
-    /// Returns an error if either the `SYN_ACK` or `RST` segments could not be
+    /// Returns an error if either the `SYN+ACK` or `RST` segments could not be
     /// constructed.
     pub fn open_conn_passive(
         iph: &Ipv4Header,
@@ -385,14 +385,14 @@ impl TCB {
         let syn_ack = conn.create_syn_ack()?;
 
         debug!(
-            "[{}] (LISTEN) received SYN, constructing SYN_ACK: LISTEN/PASSIVE_OPEN -> SYN_RECEIVED",
+            "[{}] (LISTEN) received SYN, constructing SYN+ACK: LISTEN/PASSIVE_OPEN -> SYN_RECEIVED",
             conn.sock
         );
 
         Ok((Some(conn), Some(syn_ack)))
     }
 
-    /// Returns `PSH_ACK` segments derived from the data provided to transmit
+    /// Returns `PSH+ACK` segments derived from the data provided to transmit
     /// to the peer of the connection. If the peer's send window is 0, data is
     /// buffered and no segments are returned.
     ///
@@ -401,7 +401,7 @@ impl TCB {
     ///
     /// # Errors
     ///
-    /// Returns an error if any `PSH_ACK` segments could not be constructed or
+    /// Returns an error if any `PSH+ACK` segments could not be constructed or
     /// the connection is in an invalid state for sending data.
     pub fn send(&mut self, buf: &[u8]) -> Result<VecDeque<TcpSegment>> {
         if !matches!(
@@ -494,15 +494,15 @@ impl TCB {
         Ok(min)
     }
 
-    /// Returns an optional `FIN_ACK` segment to initiate the process of a
+    /// Returns an optional `FIN+ACK` segment to initiate the process of a
     /// graceful connection termination.
     ///
     /// Connections in a state where a `FIN` segment has been transmitted will
-    /// not construct a `FIN_ACK` segment.
+    /// not construct a `FIN+ACK` segment.
     ///
     /// # Errors
     ///
-    /// Returns an error if the `FIN_ACK` segment could not be constructed or
+    /// Returns an error if the `FIN+ACK` segment could not be constructed or
     /// the connection is in the `SYN_SENT` state, indicating the connection
     /// should be closed immediately.
     pub fn close(&mut self) -> Result<Option<TcpSegment>> {
@@ -525,7 +525,7 @@ impl TCB {
                 self.state = ConnectionState::FIN_WAIT_1;
 
                 debug!(
-                    "[{}] ({state:?}) close call received, constructing FIN_ACK: {state:?} -> FIN_WAIT_1",
+                    "[{}] ({state:?}) close call received, constructing FIN+ACK: {state:?} -> FIN_WAIT_1",
                     self.sock,
                     state = self.state
                 );
@@ -542,7 +542,7 @@ impl TCB {
                 self.state = ConnectionState::CLOSING;
 
                 debug!(
-                    "[{}] (CLOSE_WAIT) close call received, constructing FIN_ACK: CLOSE_WAIT -> CLOSING",
+                    "[{}] (CLOSE_WAIT) close call received, constructing FIN+ACK: CLOSE_WAIT -> CLOSING",
                     self.sock
                 );
 
@@ -746,7 +746,7 @@ impl TCB {
                     self.snd.una = ackn;
 
                     debug!(
-                        "[{}] (SYN_SENT) received SYN_ACK, constructed ACK: SYN_SENT -> ESTABLISHED",
+                        "[{}] (SYN_SENT) received SYN+ACK, constructed ACK: SYN_SENT -> ESTABLISHED",
                         self.sock
                     );
 
@@ -758,7 +758,7 @@ impl TCB {
                     return Ok(Some(ack));
                 }
                 (true, false) => {
-                    // Case 2: Only SYN received (send SYN_ACK).
+                    // Case 2: Only SYN received (send SYN+ACK).
                     if tcph.rst() {
                         // Ignore RST without ACK.
                         return Ok(None);
@@ -776,7 +776,7 @@ impl TCB {
                     let syn_ack = self.create_syn_ack()?;
 
                     debug!(
-                        "[{}] (SYN_SENT) received SYN, constructed SYN_ACK: SYN_SENT -> SYN_RECEIVED",
+                        "[{}] (SYN_SENT) received SYN, constructed SYN+ACK: SYN_SENT -> SYN_RECEIVED",
                         self.sock
                     );
 
@@ -1392,7 +1392,7 @@ impl TCB {
         Ok(TcpSegment::new(ip, syn, &[]))
     }
 
-    /// Creates a `SYN_ACK` segment in response to a peer's connection
+    /// Creates a `SYN+ACK` segment in response to a peer's connection
     /// request.
     fn create_syn_ack(&mut self) -> Result<TcpSegment> {
         let mut syn_ack = TcpHeader::new(
@@ -1471,7 +1471,7 @@ impl TCB {
         Ok(TcpSegment::new(ip, ack, payload))
     }
 
-    /// Creates a `FIN_ACK` segment for responding to a graceful connection
+    /// Creates a `FIN+ACK` segment for responding to a graceful connection
     /// termination.
     fn create_fin_ack(&mut self, payload: &[u8]) -> Result<TcpSegment> {
         let mut fin_ack = TcpHeader::new(
@@ -1594,8 +1594,6 @@ fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-
     use super::*;
     use proptest::prelude::*;
 
@@ -1611,24 +1609,46 @@ mod tests {
         },
     };
 
+    /// Macro for validating TCB SND or RCV sequence spaces in prop tests.
+    macro_rules! prop_assert_tcb {
+        ($space:expr, $($field:ident: $value:expr),* $(,)?) => {
+            $(
+                prop_assert_eq!($space.$field, $value);
+            )*
+        };
+    }
+
     prop_compose! {
-        /// Creates an arbitrary TCP segment.
+        /// Creates an semi-arbitrary TCP segment.
+        ///
+        /// The range for sequence and acknowledgment numbers are constrained
+        /// for better coverage.
         ///
         /// Source and destination socket addresses are hard coded as they do
         /// not affect the state machine logic. Correct `socket -> connection`
         /// handling is not done by the FSM.
         fn arb_segment()
          (
-             seqn in any::<u32>(),
-             ackn in any::<u32>(),
-             wnd in any::<u16>(),
-             ack in any::<bool>(),
-             psh in any::<bool>(),
-             rst in any::<bool>(),
-             syn in any::<bool>(),
-             fin in any::<bool>(),
+             // seqn in any::<u32>(),
+             seqn in 0..10_000u32,
+             // ackn in any::<u32>(),
+             ackn in 0..10_000u32,
+             wnd in 0..64240u16,
+             flags in prop_oneof![
+                (any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>()),
+                // SYN+ACK
+                // Just((true, false, false, true, false)),
+                // SYN
+                // Just((false, false, false, true, false)),
+                // ACK
+                // Just((true, false, false, false, false)),
+                // RST
+                // Just((false, false, true, false, false))
+             ],
              payload in prop::collection::vec(any::<u8>(), 0..128)
         ) -> TcpSegment {
+                 let (ack, psh, rst, syn, fin) = flags;
+
                  let mut tcph =
                      TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, seqn, wnd);
                  tcph.set_ack_number(ackn);
@@ -1662,25 +1682,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fsm_syn_sent_transitions() {
-        let conn = RefCell::new(TCB::open_conn_active(TEST_SOCKET).unwrap());
+    proptest! {
+        // #![proptest_config(ProptestConfig::with_cases(100_000_000))]
+        #[test]
+        // NOTE: Assumes the selected ISS is 0.
+        fn fsm_syn_sent_transitions(seg in arb_segment()) {
+            let (mut conn, _syn) = TCB::open_conn_active(TEST_SOCKET).unwrap();
+            let _maybe_reply = conn.on_packet(&seg.tcp, &seg.payload);
 
-        proptest!(|(seg in arb_segment())| {
-            let (ref mut tcb, ref _syn) = *conn.borrow_mut();
-
-            prop_assert!(matches!(tcb.state,
-                ConnectionState::SYN_SENT |
-                ConnectionState::SYN_RECEIVED |
-                ConnectionState::ESTABLISHED |
-                ConnectionState::CLOSED
-            ));
-
-            let prev_state = tcb.state;
-            let _maybe_reply = tcb.on_packet(&seg.tcp, &seg.payload);
-
-            match (prev_state, tcb.state) {
-                (ConnectionState::SYN_SENT, ConnectionState::SYN_RECEIVED) => {
+            match conn.state {
+                ConnectionState::SYN_SENT => {}
+                ConnectionState::SYN_RECEIVED => {
                     prop_assert!(
                         !seg.tcp.ack() &&
                         !seg.tcp.psh() &&
@@ -1690,44 +1702,83 @@ mod tests {
                         "only SYN segment could transition from SYN_SENT -> SYN_RECEIVED"
                     );
 
-                    let _ = tcb.on_tick();
-                    prop_assert!(!tcb.retransmit_buf.is_empty(), "retransmission buffer should not be empty in SYN_RECEIVED");
+                    let _ = conn.on_tick();
+                    prop_assert!(!conn.retransmit_buf.is_empty(),
+                        "retransmission buffer should not be empty in SYN_RECEIVED"
+                    );
+
+                    prop_assert_tcb!(&conn.snd,
+                        // una: 0,
+                        nxt: 2, // Sent the previous SYN + SYN+ACK
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: 0,
+                        wl2: 0,
+                        // iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        nxt: seg.tcp.seq_number() + 1, // ACKed the peer's SYN
+                        // wnd: RCV_WND_SIZE,
+                        // up: 0,
+                        irs: seg.tcp.seq_number()
+                    );
                 }
-                (ConnectionState::SYN_SENT, ConnectionState::ESTABLISHED) => {
+                ConnectionState::ESTABLISHED => {
                     prop_assert!(
                         seg.tcp.ack() &&
                         !seg.tcp.psh() &&
                         !seg.tcp.rst() &&
                         seg.tcp.syn() &&
                         !seg.tcp.fin(),
-                        "only SYN_ACK segment could transition from SYN_SENT -> ESTABLISHED"
+                        "only SYN+ACK segment could transition from SYN_SENT -> ESTABLISHED"
+                    );
+                    prop_assert_eq!(seg.tcp.ack_number(), conn.snd.iss + 1,
+                        "previous SYN should be properly acknowledged"
                     );
 
-                    prop_assert_eq!(seg.tcp.ack_number(), tcb.snd.iss + 1, "previous SYN should be properly acknowledged");
+                    let _ = conn.on_tick();
+                    prop_assert!(conn.retransmit_buf.is_empty(),
+                        "retransmission buffer should be empty in ESTABLISHED"
+                    );
 
-                    let _ = tcb.on_tick();
-                    prop_assert!(tcb.retransmit_buf.is_empty(), "retransmission buffer should be empty in ESTABLISHED");
+                    prop_assert_tcb!(&conn.snd,
+                        una: 1, // ACKed the previous SYN
+                        // nxt: 1,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: 0,
+                        wl2: 0,
+                        // iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        nxt: seg.tcp.seq_number() + 1, // ACKed the peer's SYN
+                        // wnd: RCV_WND_SIZE,
+                        // up: 0,
+                        irs: seg.tcp.seq_number()
+                    );
                 }
-                (ConnectionState::SYN_SENT, ConnectionState::CLOSED) => {
-                    // Either invalid ACK with no RST, or valid ACK with RST.
+                ConnectionState::CLOSED => {
+                    // Either invalid ACK with no RST, or valid ACK+RST.
                     if !seg.tcp.rst() {
-                        prop_assert!(seg.tcp.ack(), "segment with at least ACK could transition from SYN_SENT -> CLOSED");
-                        prop_assert_ne!(seg.tcp.ack_number(), tcb.snd.iss + 1, "previous SYN should not be properly acknowledged");
-                    } else {
-                        prop_assert!(
-                            seg.tcp.ack() &&
-                            !seg.tcp.psh() &&
-                            seg.tcp.rst() &&
-                            !seg.tcp.syn() &&
-                            !seg.tcp.fin(),
-                            "RST_ACK segment could transition from SYN_SENT -> CLOSED"
+                        prop_assert!(seg.tcp.ack(),
+                            "segment with at least ACK (invalid) could transition from SYN_SENT -> CLOSED"
                         );
-
-                        prop_assert_eq!(seg.tcp.ack_number(), tcb.snd.iss + 1, "previous SYN should be properly acknowledged");
+                        prop_assert_ne!(seg.tcp.ack_number(), conn.snd.iss + 1,
+                            "previous SYN should not be properly acknowledged"
+                        );
+                    } else {
+                        prop_assert!(seg.tcp.ack() && seg.tcp.rst(),
+                            "segment with at least ACK+RST (valid) could transition from SYN_SENT -> CLOSED"
+                        );
+                        prop_assert_eq!(seg.tcp.ack_number(), conn.snd.iss + 1,
+                            "previous SYN should be properly acknowledged"
+                        );
                     }
                 }
-                _ => {}
+                _ => prop_assert!(false, "unexpected transition from SYN_SENT -> {:?}", conn.state),
             }
-        });
+        }
     }
 }
