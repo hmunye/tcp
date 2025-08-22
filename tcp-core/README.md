@@ -28,7 +28,7 @@ on [RFC 793](https://www.rfc-editor.org/rfc/rfc793).
 Run unit tests for IPv4/TCP header parsing/serialization and state machine logic with:
 
 ```bash
-cargo t
+cargo t --release
 ```
 
 ## Limitations

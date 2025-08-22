@@ -1,7 +1,7 @@
-//! TCP implementation in user-space, built for learning purposes, using the
-//! TUN/TAP interface.
+//! Linux-only crate enabling TUN/TAP networking for user-space TCP via
+//! `tcp-core`, exposing a [std::net]-like API for TCP communication.
 //!
-//! Not suitable for production use.
+//! [std::net]: https://doc.rust-lang.org/std/net/index.html
 
 #![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
@@ -22,8 +22,6 @@ macro_rules! errno {
         let errno = ::std::io::Error::last_os_error();
         let prefix = format!($($arg)+);
 
-        let msg = format!("{prefix}: {errno}");
-
-        tcp_core::Error::Io(::std::io::Error::new(errno.kind(), msg))
+        tcp_core::Error::Io(::std::io::Error::new(errno.kind(), format!("{prefix}: {errno}")))
     }};
 }

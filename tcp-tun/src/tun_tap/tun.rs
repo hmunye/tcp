@@ -1,14 +1,13 @@
 //! TUN (network TUNnel) virtual network device.
 
-use std::ffi::CStr;
+use tcp_core::Result;
+
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::{mem, ptr};
 
 use crate::errno;
-
-use tcp_core::{Error, Result};
 
 /// Maximum Transmission Unit (`MTU`) for the TUN interface.
 ///
@@ -23,7 +22,6 @@ pub const MTU_SIZE: usize = 1504;
 #[derive(Debug)]
 pub struct Tun {
     fd: File,
-    name: String,
 }
 
 impl Tun {
@@ -37,15 +35,12 @@ impl Tun {
     ///
     /// [EtherType]: https://en.wikipedia.org/wiki/EtherType
     ///
-    /// The caller must ensure that the provided device name does not include
-    /// any null (`\0`) bytes.
-    ///
     /// # Errors
     ///
-    /// Returns an error if the TUN device cannot be opened, for example, due to
-    /// an invalid name or the absence of `CAP_NET_ADMIN` privilege.
-    pub fn new(dev: &str) -> Result<Self> {
-        Self::create_tun(dev, true)
+    /// Returns an error if the TUN device cannot be opened, for example, due
+    /// to the absence of `CAP_NET_ADMIN` privilege.
+    pub fn new() -> Result<Self> {
+        Self::open_tun(true)
     }
 
     /// Creates a new TUN virtual network device without packet information.
@@ -60,28 +55,17 @@ impl Tun {
     ///
     /// [EtherType]: https://en.wikipedia.org/wiki/EtherType
     ///
-    /// The caller must ensure that the provided device name does not include
-    /// any null (`\0`) bytes.
-    ///
     /// # Errors
     ///
-    /// Returns an error if the TUN device cannot be opened, for example, due to
-    /// an invalid name or the absence of `CAP_NET_ADMIN` privilege.
-    pub fn without_packet_info(dev: &str) -> Result<Self> {
-        Self::create_tun(dev, false)
+    /// Returns an error if the TUN device cannot be opened, for example, due
+    /// to the absence of `CAP_NET_ADMIN` privilege.
+    pub fn without_packet_info() -> Result<Self> {
+        Self::open_tun(false)
     }
 
     /// Returns the raw file descriptor of the TUN virtual network device.
     pub fn fd(&self) -> RawFd {
         self.fd.as_raw_fd()
-    }
-
-    /// Returns the assigned name of the TUN virtual network device.
-    ///
-    /// The name provided for the TUN device is a suggestion to the kernel, so
-    /// the assigned name may differ from the one given.
-    pub fn name(&self) -> &str {
-        &self.name
     }
 
     /// Receives an IP packet from the TUN virtual network device.
@@ -128,16 +112,7 @@ impl Tun {
         Ok(())
     }
 
-    fn create_tun(dev: &str, with_packet_info: bool) -> Result<Self> {
-        // `IFNAMSIZ` is the size of `ifreq.ifr_name`, including null
-        // terminator.
-        if dev.len() >= libc::IFNAMSIZ {
-            return Err(Error::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "interface name too long",
-            )));
-        }
-
+    fn open_tun(with_packet_info: bool) -> Result<Self> {
         let fd = OpenOptions::new()
             .read(true)
             .write(true)
@@ -146,7 +121,6 @@ impl Tun {
         let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
 
         // IFF_TUN   - TUN device (no Ethernet headers)
-        //
         // IFF_NO_PI - Do not provide packet information
         let flags = if with_packet_info {
             libc::IFF_TUN
@@ -154,32 +128,24 @@ impl Tun {
             libc::IFF_TUN | libc::IFF_NO_PI
         };
 
+        // Name given to the TUN device in `script.sh`.
+        let dev = "tun0";
+
         unsafe {
-            // SAFETY: `dev.len()` is less than `IFNAMSIZ`.
             ptr::copy_nonoverlapping(
                 dev.as_ptr(),
                 ifr.ifr_name.as_mut_ptr() as *mut u8,
                 dev.len(),
             );
-
-            ifr.ifr_ifru.ifru_flags = flags as i16;
         }
+
+        ifr.ifr_ifru.ifru_flags = flags as i16;
 
         if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TUNSETIFF, &ifr) } == -1 {
-            return Err(errno!(
-                "failed to bind network interface with TUN file handle"
-            ));
+            return Err(errno!("failed to update TUN packet info flag"));
         }
 
-        // SAFETY: `ifr_name` remains null-terminated after copying `dev.len()`
-        // bytes.
-        let name = unsafe {
-            CStr::from_ptr(ifr.ifr_name.as_ptr())
-                .to_string_lossy()
-                .into_owned()
-        };
-
-        Ok(Self { fd, name })
+        Ok(Self { fd })
     }
 }
 

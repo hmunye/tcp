@@ -1,6 +1,16 @@
-//! Event loop to manage the TCP, monitor for raw packet I/O through the TUN
-//! virtual network device, timers for connection cleanup and retransmission,
-//! and signals for graceful shutdown.
+//! Event loop to monitor for raw packet I/O, manage timers for connection
+//! termination and retransmission, and OS signals for graceful shutdown.
+
+// TODO: divide into connect_loop and listen_loop where the Manager provides
+// all of the file descriptors and the connections hash map, that was listening
+// and handling multiple connections can be handled seperatly from connecting
+// to only one peer.
+
+use tcp_core::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
+use tcp_core::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
+use tcp_core::protocol::socket::{Socket, SocketAddr};
+use tcp_core::{Error, Result};
+use tcp_core::{debug, error, info, warn};
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -10,16 +20,6 @@ use std::{io, mem, ptr};
 
 use crate::errno;
 use crate::tun_tap::tun::{MTU_SIZE, Tun};
-
-use tcp_core::protocol::fsm::{
-    ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, Socket, SocketAddr, TCB,
-};
-use tcp_core::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
-use tcp_core::{Error, Result};
-use tcp_core::{debug, error, info, warn};
-
-/// Maximum Transmission Unit.
-const MTU_SIZE: usize = 1504;
 
 /// Total number of events returned each tick (event loop cycle).
 const EPOLL_MAX_EVENTS: i32 = 3;
@@ -31,7 +31,7 @@ const EPOLL_TIMEOUT_MS: i32 = -1;
 /// Runs an event loop to monitor for and process incoming IP packets from the
 /// TUN virtual network device. This function runs continuously until receiving
 /// a shutdown signal (e.g., SIGINT, SIGTERM) or encountering an error.
-pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Result<()> {
+pub fn event_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Result<()> {
     // Stores events for ready file descriptors.
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; EPOLL_MAX_EVENTS as usize];
     // Number of ready file descriptors.
@@ -44,7 +44,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
         Ok(fd) => fd,
         Err(err) => {
             unsafe {
-                let _ = libc::close(signal_fd);
+                libc::close(signal_fd);
             }
             return Err(err);
         }
@@ -54,14 +54,16 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
         Ok(fd) => fd,
         Err(err) => {
             unsafe {
-                let _ = libc::close(signal_fd);
-                let _ = libc::close(timer_fd);
+                libc::close(signal_fd);
+                libc::close(timer_fd);
             }
             return Err(err);
         }
     };
 
     let mut buf = [0u8; MTU_SIZE];
+
+    info!("listening for connections...");
 
     'event_loop: loop {
         unsafe {
@@ -79,11 +81,18 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
             for event in events.iter().take(rdfs as usize) {
                 // A signal was caught (SIGINT or SIGTERM).
                 if event.u64 == signal_fd as u64 {
-                    // TODO: Do something on SIGINT or SIGTERM.
                     info!(
                         "signal caught -- shutting down, active connections remaining: {}",
                         connections.len()
                     );
+
+                    for (_, conn) in connections.iter_mut() {
+                        if let Ok(segment) = conn.close()
+                            && let Some(seg) = segment
+                        {
+                            nic.send(&seg.to_be_bytes()?[..])?;
+                        }
+                    }
 
                     break 'event_loop;
                 }
@@ -94,70 +103,47 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                     let mut buf = [0u8; 8];
                     let _ = libc::read(timer_fd, &raw mut buf as *mut libc::c_void, buf.len());
 
-                    // Keep track of the nearest retransmission segment timer to
-                    // expire.
+                    // Keep track of the nearest retransmission segment timer
+                    // to expire.
                     let mut nearest_timer = Duration::MAX;
 
-                    // Remove connections that are ready to be closed or aborted.
-                    connections.retain(|socket, conn| {
-                        match conn.state {
-                            ConnectionState::TIME_WAIT => {
-                                if conn.time_wait.elapsed() >= Duration::from_secs(MSL * 2) {
-                                    warn!(
-                                        "[{}] (TIME_WAIT) timer expired -- removing connection",
-                                        socket
-                                    );
+                    // Remove connections that are ready to be closed or
+                    // aborted.
+                    connections.retain(|socket, conn| match conn.state {
+                        ConnectionState::TIME_WAIT => {
+                            if conn.time_wait.elapsed() >= Duration::from_secs(MSL * 2) {
+                                warn!(
+                                    "[{}] (TIME_WAIT) timer expired -- removing connection",
+                                    socket
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        state => {
+                            let (timer, mut segments) = conn.on_tick();
 
-                                    let buf = &conn.usr_buf.make_contiguous();
-                                    debug!(
-                                        "[{}] bytes received during connection lifetime: {}",
-                                        socket,
-                                        std::str::from_utf8_unchecked(buf).replace("\n", "\\n")
-                                    );
-
-                                    conn.state = ConnectionState::CLOSED;
-
-                                    false
-                                } else {
-                                    true
+                            while let Some(seg) = segments.pop_front() {
+                                if let Ok(bytes) = seg.to_be_bytes() {
+                                    nic.send(&bytes[..]).unwrap_or_else(|err| {
+                                        error!(
+                                            "[{}] ({:?}) failed to send segment bytes to TUN: {err}",
+                                            socket, state
+                                        );
+                                        0
+                                    });
                                 }
                             }
-                            _ => {
-                                // If the maximum number of retransmissions is
-                                // reached, the connection's state transitions
-                                // to CLOSED.
-                                match conn.on_conn_tick() {
-                                    Ok(timer) => {
-                                        if conn.state == ConnectionState::CLOSED {
-                                            let buf = &conn.usr_buf.make_contiguous();
 
-                                            debug!(
-                                                "[{}] removing connection",
-                                                socket,
-                                            );
-
-                                            debug!(
-                                                "[{}] bytes received during connection lifetime: {}",
-                                                socket,
-                                                std::str::from_utf8_unchecked(buf).escape_default().collect::<String>()
-                                            );
-
-                                            false
-                                        } else {
-                                            if timer < nearest_timer {
-                                                nearest_timer = timer;
-                                            }
-                                            true
-                                        }
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "[{}] ({:?}) failed to retransmit segment: {err}",
-                                            socket, conn.state
-                                        );
-                                        false
-                                    }
+                            if state == ConnectionState::CLOSED {
+                                warn!("[{}] ({:?}) removing connection", socket, state);
+                                false
+                            } else {
+                                if timer < nearest_timer {
+                                    nearest_timer = timer;
                                 }
+                                true
                             }
                         }
                     });
@@ -175,7 +161,7 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
 
                     // Ensure the timer is re-armed.
                     let time_spec = libc::itimerspec {
-                        // The interval for periodic expirations.
+                        // The interval for periodic expiration.
                         it_interval: libc::timespec {
                             tv_sec: 0,
                             tv_nsec: 0,
@@ -244,10 +230,12 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
 
                                     match connections.entry(socket) {
                                         Entry::Vacant(entry) => {
-                                            match TCB::on_conn_req(&iph, &tcph) {
-                                                Ok(opt) => {
-                                                    if let Some(conn) = opt {
+                                            match TCB::open_conn_passive(&iph, &tcph) {
+                                                Ok((tcb, segment)) => {
+                                                    if let (Some(conn), Some(seg)) = (tcb, segment)
+                                                    {
                                                         entry.insert(conn);
+                                                        nic.send(&seg.to_be_bytes()?[..])?;
                                                     }
                                                 }
                                                 Err(err) => {
@@ -258,24 +246,15 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                                             }
                                         }
                                         Entry::Occupied(mut conn) => {
-                                            if let Err(Error::Io(err)) =
-                                                conn.get_mut().on_conn_packet(&iph, &tcph, payload)
-                                            {
-                                                match err.kind() {
-                                                    io::ErrorKind::ConnectionReset
-                                                    | io::ErrorKind::ConnectionRefused => {
-                                                        let buf = &conn
-                                                            .get_mut()
-                                                            .usr_buf
-                                                            .make_contiguous();
-                                                        debug!(
-                                                            "[{}] bytes received during connection lifetime: {}",
-                                                            socket,
-                                                            std::str::from_utf8_unchecked(buf)
-                                                                .escape_default()
-                                                                .collect::<String>()
-                                                        );
+                                            let state = conn.get().state;
 
+                                            match conn.get_mut().on_segment(&tcph, payload) {
+                                                Ok(segment) => {
+                                                    if let Some(seg) = segment {
+                                                        nic.send(&seg.to_be_bytes()?[..])?;
+                                                    }
+
+                                                    if state == ConnectionState::CLOSED {
                                                         connections.remove(&socket);
 
                                                         debug!(
@@ -284,9 +263,24 @@ pub fn packet_loop(nic: &mut Tun, connections: &mut HashMap<Socket, TCB>) -> Res
                                                             connections.len(),
                                                         );
                                                     }
-                                                    _ => {
+                                                }
+                                                Err(Error::Io(err)) => match err.kind() {
+                                                    io::ErrorKind::ConnectionReset
+                                                    | io::ErrorKind::ConnectionRefused => {
+                                                        connections.remove(&socket);
+
+                                                        debug!(
+                                                            "[{}] removed connection, active connections remaining: {}",
+                                                            socket,
+                                                            connections.len(),
+                                                        );
+                                                    }
+                                                    err => {
                                                         warn!("{err}");
                                                     }
+                                                },
+                                                _ => {
+                                                    error!("unexpected error occurred");
                                                 }
                                             }
                                         }
@@ -344,7 +338,7 @@ fn init_signal_fd() -> Result<RawFd> {
     }
 }
 
-/// Creates a non-blocking `timer_fd` armed with an initial expiration of `RTO`.
+/// Creates a non-blocking `timer_fd` armed with an initial expiration of [RTO].
 fn init_timer_fd() -> Result<RawFd> {
     unsafe {
         let timer_fd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK);
@@ -354,7 +348,7 @@ fn init_timer_fd() -> Result<RawFd> {
 
         // Ensure the timer is armed before entering the loop.
         let time_spec = libc::itimerspec {
-            // The interval for periodic expirations.
+            // The interval for periodic expiration.
             it_interval: libc::timespec {
                 tv_sec: 0,
                 tv_nsec: 0,
@@ -379,10 +373,11 @@ fn init_epoll_fd(fds: [RawFd; 3]) -> Result<RawFd> {
     unsafe {
         let mut ev = libc::epoll_event { events: 0, u64: 0 };
 
-        // `epoll()` is used to efficiently monitor multiple file descriptors for
-        // I/O. Instead of blocking on each socket sequentially, this approach
-        // (with non-blocking sockets) allows blocking on all simultaneously,
-        // processing only the file descriptors that are ready for I/O.
+        // `epoll()` is used to efficiently monitor multiple file descriptors
+        // for I/O. Instead of blocking on each socket sequentially,
+        // this approach (with non-blocking sockets) allows blocking on all
+        // simultaneously, processing only the file descriptors that are ready
+        // for I/O.
         let epoll_fd = libc::epoll_create1(0);
         if epoll_fd == -1 {
             return Err(errno!("failed to create epoll_fd"));
@@ -391,8 +386,8 @@ fn init_epoll_fd(fds: [RawFd; 3]) -> Result<RawFd> {
         for fd in fds {
             ev.events = libc::EPOLLIN as u32;
             ev.u64 = fd as u64;
-            // Add the file descriptor to the epoll interest list to be notified
-            // on ready events.
+            // Add the file descriptor to the epoll interest list to be
+            // notified on ready events.
             if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &raw mut ev) == -1 {
                 return Err(errno!("failed to add to epoll interest list"));
             }
