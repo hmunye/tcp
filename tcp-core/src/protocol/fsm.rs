@@ -522,7 +522,9 @@ impl TCB {
             }
             ConnectionState::SYN_RECEIVED | ConnectionState::ESTABLISHED => {
                 let fin_ack = self.create_fin_ack(&[])?;
+
                 self.state = ConnectionState::FIN_WAIT_1;
+                self.snd.nxt = self.snd.nxt.wrapping_add(1);
 
                 debug!(
                     "[{}] ({state:?}) close call received, constructing FIN+ACK: {state:?} -> FIN_WAIT_1",
@@ -535,14 +537,11 @@ impl TCB {
             ConnectionState::CLOSE_WAIT => {
                 let fin_ack = self.create_fin_ack(&[])?;
 
-                // CLOSE-WAIT STATE
-                //
-                // Queue this request until all preceding SENDs have been
-                // segmentized; then send a FIN segment, enter CLOSING state.
-                self.state = ConnectionState::CLOSING;
+                self.state = ConnectionState::LAST_ACK;
+                self.snd.nxt = self.snd.nxt.wrapping_add(1);
 
                 debug!(
-                    "[{}] (CLOSE_WAIT) close call received, constructing FIN+ACK: CLOSE_WAIT -> CLOSING",
+                    "[{}] (CLOSE_WAIT) close call received, constructing FIN+ACK: CLOSE_WAIT -> LAST_ACK",
                     self.sock
                 );
 
@@ -636,7 +635,7 @@ impl TCB {
     /// Returns an error if the connection's state is `LISTEN` or `CLOSED`, the
     /// connection was terminated by the peer, or any segments to transmit could
     /// not be constructed.
-    pub fn on_packet(&mut self, tcph: &TcpHeader, payload: &[u8]) -> Result<Option<TcpSegment>> {
+    pub fn on_segment(&mut self, tcph: &TcpHeader, payload: &[u8]) -> Result<Option<TcpSegment>> {
         // This should never happen, but just in case...
         if let ConnectionState::CLOSED | ConnectionState::LISTEN = self.state {
             error!(
@@ -950,6 +949,11 @@ impl TCB {
             return Ok(None);
         } else {
             if let ConnectionState::SYN_RECEIVED = self.state {
+                // RFC 793 is more permissive and allows entering the
+                // `ESTABLISHED` even if our SYN+ACK  wasn't explicitly
+                // acknowledged in this segment. This means the retransmit
+                // buffer might still contain the SYN+ACK.
+                //
                 // If SND.UNA =< SEG.ACK =< SND.NXT then the ACK is acceptable.
                 if !is_between_wrapped(
                     self.snd.una.wrapping_sub(1),
@@ -1201,6 +1205,9 @@ impl TCB {
 
                             self.state = ConnectionState::CLOSE_WAIT;
                         }
+                        // `CLOSING` state is essentially a "dead branch" since
+                        // it can only be transitioned to from an incoming bare
+                        // `FIN` segment, which is currently not allowed.
                         ConnectionState::FIN_WAIT_1 => {
                             debug!(
                                 "[{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
@@ -1215,30 +1222,24 @@ impl TCB {
                                 self.sock
                             );
 
-                            // Timer is not set here since we will cascade
-                            // down to the TIME_WAIT code block and set the
-                            // timer as well as acknowledge the FIN.
+                            self.time_wait = Instant::now();
                             self.state = ConnectionState::TIME_WAIT;
                         }
                         _ => unreachable!(),
                     }
                 }
 
-                // Since FIN_WAIT_2 -> TIME_WAIT will cascade down and
-                // respond with an ACK from there.
-                if !matches!(self.state, ConnectionState::TIME_WAIT) {
-                    // TODO: handle buffered application data in `snd_buf`,
-                    // should be piggybacked with ACKs sent to the peer but only
-                    // in ESTABLISHED and CLOSE_WAIT states.
-                    let ack = self.create_ack(&[])?;
+                // TODO: handle buffered application data in `snd_buf`,
+                // should be piggybacked with ACKs sent to the peer but only
+                // in ESTABLISHED and CLOSE_WAIT states.
+                let ack = self.create_ack(&[])?;
 
-                    debug!(
-                        "[{}] ({:?}) received data: constructed ACK",
-                        self.sock, self.state,
-                    );
+                debug!(
+                    "[{}] ({:?}) received data: constructed ACK",
+                    self.sock, self.state,
+                );
 
-                    return Ok(Some(ack));
-                }
+                return Ok(Some(ack));
             }
 
             if let ConnectionState::TIME_WAIT = self.state {
@@ -1248,17 +1249,21 @@ impl TCB {
                 // retransmission of the remote FIN. Acknowledge it, and restart
                 // the 2 MSL timeout.
                 if tcph.fin() {
-                    debug!("[{}] (TIME_WAIT) received FIN: resetting timer", self.sock);
-
+                    let ack = self.create_ack(&[])?;
                     self.time_wait = Instant::now();
-                    return Ok(Some(self.create_ack(&[])?));
+
+                    debug!(
+                        "[{}] (TIME_WAIT) received FIN: resetting timer and constructing ACK",
+                        self.sock
+                    );
+
+                    return Ok(Some(ack));
                 }
             }
         }
 
         Ok(None)
     }
-
     /// Processes an existing connection's retransmission queue for expired
     /// timers or acknowledged segments, returning a `Duration` (when the next
     /// segment will expire) and vector of segments pair.
@@ -1609,11 +1614,160 @@ mod tests {
         },
     };
 
+    /// Generates a new `TCB` and optional segment pair, given the desired
+    /// ending state, initial sequence number, and window size of the "peer".
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the provided state is `CLOSED`, `LISTEN`, `SYN_SENT`, or
+    /// `CLOSING`, if the `TCB` could not be unwrapped, or if the IPv4/TCP
+    /// headers could not be constructed.
+    fn gen_tcb_with_state(state: ConnectionState, isn: u32, wnd: u16) -> (TCB, Option<TcpSegment>) {
+        // Using a separate function to generate a TCB in `SYN_RECEIVED` allows
+        // me to adjust the `ISN` provided, so the sequence numbers can align
+        // with the arbitrary segments used in prop tests.
+        fn create_syn_recv_tcb(isn: u32, wnd: u16) -> (TCB, Option<TcpSegment>) {
+            let mut syn = TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, isn, wnd);
+            syn.set_syn();
+            syn.set_option_mss(1460).unwrap();
+
+            let syn_ip = Ipv4Header::new(
+                TEST_SOCKET.dst.addr,
+                TEST_SOCKET.src.addr,
+                syn.header_len() as u16,
+                64,
+                Protocol::TCP,
+            )
+            .unwrap();
+
+            // Transitions from `LISTEN` -> `SYN_RECEIVED`...
+            let (maybe_conn, maybe_syn_ack) = TCB::open_conn_passive(&syn_ip, &syn).unwrap();
+
+            (maybe_conn.unwrap(), maybe_syn_ack)
+        }
+
+        match state {
+            ConnectionState::SYN_RECEIVED => create_syn_recv_tcb(isn.wrapping_sub(1), wnd),
+            ConnectionState::ESTABLISHED => {
+                let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(1), wnd);
+
+                let mut ack = TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, isn, wnd);
+                ack.set_ack_number(1);
+                ack.set_ack();
+
+                // Transitions from `SYN_RECEIVED` -> `ESTABLISHED`...
+                let maybe_ack = conn.on_segment(&ack, &[]).unwrap();
+
+                (conn, maybe_ack)
+            }
+            ConnectionState::FIN_WAIT_1 => {
+                let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(1), wnd);
+
+                // Transitions from `SYN_RECEIVED` -> `FIN_WAIT_1`...
+                let maybe_fin_ack = conn.close().unwrap();
+
+                (conn, maybe_fin_ack)
+            }
+            ConnectionState::FIN_WAIT_2 => {
+                let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(1), wnd);
+
+                // Transitions from `SYN_RECEIVED` -> `FIN_WAIT_1`...
+                let _ = conn.close().unwrap();
+
+                let mut ack = TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, isn, wnd);
+                ack.set_ack_number(2);
+                ack.set_ack();
+
+                // Transitions from `FIN_WAIT_1` -> `FIN_WAIT_2`...
+                let maybe_ack = conn.on_segment(&ack, &[]).unwrap();
+
+                (conn, maybe_ack)
+            }
+            ConnectionState::CLOSE_WAIT => {
+                let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(2), wnd);
+
+                let mut fin_ack = TcpHeader::new(
+                    TEST_SOCKET.dst.port,
+                    TEST_SOCKET.src.port,
+                    isn.wrapping_sub(1),
+                    wnd,
+                );
+                fin_ack.set_ack_number(1);
+                fin_ack.set_fin();
+                fin_ack.set_ack();
+
+                // Transitions from `SYN_RECEIVED` -> `CLOSE_WAIT`...
+                let maybe_ack = conn.on_segment(&fin_ack, &[]).unwrap();
+
+                (conn, maybe_ack)
+            }
+            ConnectionState::LAST_ACK => {
+                let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(2), wnd);
+
+                let mut fin_ack = TcpHeader::new(
+                    TEST_SOCKET.dst.port,
+                    TEST_SOCKET.src.port,
+                    isn.wrapping_sub(1),
+                    wnd,
+                );
+                fin_ack.set_ack_number(1);
+                fin_ack.set_fin();
+                fin_ack.set_ack();
+
+                // Transitions from `SYN_RECEIVED` -> `CLOSE_WAIT`...
+                let _ = conn.on_segment(&fin_ack, &[]).unwrap();
+
+                // Transitions from `CLOSE_WAIT` -> `LAST_ACK`...
+                let maybe_fin_ack = conn.close().unwrap();
+
+                (conn, maybe_fin_ack)
+            }
+            ConnectionState::TIME_WAIT => {
+                let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(2), wnd);
+
+                // Transitions from `SYN_RECEIVED` -> `FIN_WAIT_1`...
+                let _ = conn.close().unwrap();
+
+                let mut fin_ack = TcpHeader::new(
+                    TEST_SOCKET.dst.port,
+                    TEST_SOCKET.src.port,
+                    isn.wrapping_sub(1),
+                    wnd,
+                );
+                fin_ack.set_ack_number(2);
+                fin_ack.set_fin();
+                fin_ack.set_ack();
+
+                // Transitions from `FIN_WAIT_1` -> `TIME_WAIT`...
+                let maybe_ack = conn.on_segment(&fin_ack, &[]).unwrap();
+
+                (conn, maybe_ack)
+            }
+            _ => panic!("unable to generate TCB in {:?} state", state),
+        }
+    }
+
+    /// Returns `true` if the sequence number provided is valid, assuming that
+    /// the receive window is non-zero.
+    fn is_valid_seq(seqn: u32, seg_len: u32, rcv_nxt: u32, nxt_wnd: u32) -> bool {
+        // NOTE: For sequence number checking, only case 2 and 4 are covered.
+        if seg_len == 0 {
+            is_between_wrapped(rcv_nxt.wrapping_sub(1), seqn, nxt_wnd)
+        } else {
+            is_between_wrapped(rcv_nxt.wrapping_sub(1), seqn, nxt_wnd)
+                || is_between_wrapped(
+                    rcv_nxt.wrapping_sub(1),
+                    seqn.wrapping_add(seg_len - 1),
+                    nxt_wnd,
+                )
+        }
+    }
+
     /// Macro for validating TCB SND or RCV sequence spaces in prop tests.
     macro_rules! prop_assert_tcb {
         ($space:expr, $($field:ident: $value:expr),* $(,)?) => {
             $(
-                prop_assert_eq!($space.$field, $value);
+                prop_assert_eq!($space.$field, $value, "{} mismatch", stringify!($field));
             )*
         };
     }
@@ -1629,21 +1783,20 @@ mod tests {
         /// handling is not done by the FSM.
         fn arb_segment()
          (
-             // seqn in any::<u32>(),
-             seqn in 0..10_000u32,
+             seqn in any::<u32>(),
+             // seqn in 0..10_000u32,
              // ackn in any::<u32>(),
              ackn in 0..10_000u32,
              wnd in 0..64240u16,
              flags in prop_oneof![
                 (any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>()),
-                // SYN+ACK
-                // Just((true, false, false, true, false)),
-                // SYN
-                // Just((false, false, false, true, false)),
-                // ACK
-                // Just((true, false, false, false, false)),
-                // RST
-                // Just((false, false, true, false, false))
+                // Add small bias towards significant combinations.
+                Just((false, false, false, true, false)), // SYN
+                Just((true, false, false, true, false)), // SYN+ACK
+                Just((true, false, false, false, false)), // ACK
+                Just((false, false, true, false, false)), // RST
+                Just((true, false, true, false, false)), // ACK+RST
+                Just((true, false, false, false, true)) // FIN+ACK
              ],
              payload in prop::collection::vec(any::<u8>(), 0..128)
         ) -> TcpSegment {
@@ -1683,12 +1836,10 @@ mod tests {
     }
 
     proptest! {
-        // #![proptest_config(ProptestConfig::with_cases(100_000_000))]
         #[test]
-        // NOTE: Assumes the selected ISS is 0.
         fn fsm_syn_sent_transitions(seg in arb_segment()) {
             let (mut conn, _syn) = TCB::open_conn_active(TEST_SOCKET).unwrap();
-            let _maybe_reply = conn.on_packet(&seg.tcp, &seg.payload);
+            let _maybe_reply = conn.on_segment(&seg.tcp, &seg.payload);
 
             match conn.state {
                 ConnectionState::SYN_SENT => {}
@@ -1704,23 +1855,23 @@ mod tests {
 
                     let _ = conn.on_tick();
                     prop_assert!(!conn.retransmit_buf.is_empty(),
-                        "retransmission buffer should not be empty in SYN_RECEIVED"
+                        "retransmission buffer should not be empty in transition from SYN_SENT -> SYN_RECEIVED"
                     );
 
                     prop_assert_tcb!(&conn.snd,
-                        // una: 0,
+                        una: 0,
                         nxt: 2, // Sent the previous SYN + SYN+ACK
                         wnd: seg.tcp.window(),
                         up: seg.tcp.urgent_pointer(),
                         wl1: 0,
                         wl2: 0,
-                        // iss: 0
+                        iss: 0
                     );
 
                     prop_assert_tcb!(&conn.rcv,
                         nxt: seg.tcp.seq_number() + 1, // ACKed the peer's SYN
-                        // wnd: RCV_WND_SIZE,
-                        // up: 0,
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
                         irs: seg.tcp.seq_number()
                     );
                 }
@@ -1734,28 +1885,28 @@ mod tests {
                         "only SYN+ACK segment could transition from SYN_SENT -> ESTABLISHED"
                     );
                     prop_assert_eq!(seg.tcp.ack_number(), conn.snd.iss + 1,
-                        "previous SYN should be properly acknowledged"
+                        "SYN should be acknowledged in transition from SYN_SENT -> ESTABLISHED"
                     );
 
                     let _ = conn.on_tick();
                     prop_assert!(conn.retransmit_buf.is_empty(),
-                        "retransmission buffer should be empty in ESTABLISHED"
+                        "retransmission buffer should be empty in transition from SYN_SENT -> ESTABLISHED"
                     );
 
                     prop_assert_tcb!(&conn.snd,
                         una: 1, // ACKed the previous SYN
-                        // nxt: 1,
+                        nxt: 1,
                         wnd: seg.tcp.window(),
                         up: seg.tcp.urgent_pointer(),
                         wl1: 0,
                         wl2: 0,
-                        // iss: 0
+                        iss: 0
                     );
 
                     prop_assert_tcb!(&conn.rcv,
                         nxt: seg.tcp.seq_number() + 1, // ACKed the peer's SYN
-                        // wnd: RCV_WND_SIZE,
-                        // up: 0,
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
                         irs: seg.tcp.seq_number()
                     );
                 }
@@ -1766,18 +1917,674 @@ mod tests {
                             "segment with at least ACK (invalid) could transition from SYN_SENT -> CLOSED"
                         );
                         prop_assert_ne!(seg.tcp.ack_number(), conn.snd.iss + 1,
-                            "previous SYN should not be properly acknowledged"
+                            "SYN should not be acknowledged in transition from SYN_SENT -> CLOSED"
                         );
                     } else {
                         prop_assert!(seg.tcp.ack() && seg.tcp.rst(),
                             "segment with at least ACK+RST (valid) could transition from SYN_SENT -> CLOSED"
                         );
                         prop_assert_eq!(seg.tcp.ack_number(), conn.snd.iss + 1,
-                            "previous SYN should be properly acknowledged"
+                            "SYN should be acknowledged in transition from SYN_SENT -> CLOSED"
                         );
                     }
                 }
                 _ => prop_assert!(false, "unexpected transition from SYN_SENT -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_syn_recv_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (mut conn, _maybe_syn_ack) = gen_tcb_with_state(ConnectionState::SYN_RECEIVED, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::SYN_RECEIVED);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            let _maybe_reply = conn.on_segment(&seg.tcp, &seg.payload);
+
+            let acked_syn_ack = seg.tcp.ack_number() == conn.snd.nxt;
+
+            match conn.state {
+                ConnectionState::SYN_RECEIVED => {}
+                ConnectionState::ESTABLISHED => {
+                    prop_assert!(
+                        (seg.tcp.ack() &&
+                            !seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            !seg.tcp.fin()) ||
+                        (seg.tcp.ack() &&
+                            seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            !seg.tcp.fin()
+                        ),
+                        "only ACK or ACK+PSH segment could transition from SYN_RECEIVED -> ESTABLISHED"
+                    );
+
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from SYN_RECEIVED -> ESTABLISHED"
+                    );
+
+                    prop_assert!(
+                        is_between_wrapped(
+                            conn.snd.una.wrapping_sub(1),
+                            seg.tcp.ack_number(),
+                            conn.snd.nxt.wrapping_add(1),
+                        ),
+                        "acknowledgment number should be acceptable in transition from SYN_RECEIVED -> ESTABLISHED"
+                    );
+
+                    if acked_syn_ack {
+                        let _ = conn.on_tick();
+                        prop_assert!(conn.retransmit_buf.is_empty(),
+                            "retransmission buffer should be empty in transition from SYN_RECEIVED -> ESTABLISHED"
+                        );
+                    }
+
+                    prop_assert_tcb!(&conn.snd,
+                        una: if acked_syn_ack { 1 } else { 0 },
+                        nxt: 1,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: if acked_syn_ack { seg.tcp.seq_number() } else { 0 },
+                        wl2: if acked_syn_ack { seg.tcp.ack_number() } else { 0 },
+                        iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        // nxt: irs,
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
+                        // To account for the TCB generation.
+                        irs: irs.wrapping_sub(1)
+                    );
+                }
+                ConnectionState::CLOSE_WAIT => {
+                    prop_assert!(
+                        (seg.tcp.ack() &&
+                            !seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()) ||
+                        (seg.tcp.ack() &&
+                            seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()
+                        ),
+                        "only FIN+ACK or FIN+ACK+PSH segment could transition from SYN_RECEIVED -> CLOSE_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from SYN_RECEIVED -> CLOSE_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_between_wrapped(
+                            conn.snd.una.wrapping_sub(1),
+                            seg.tcp.ack_number(),
+                            conn.snd.nxt.wrapping_add(1),
+                        ),
+                        "acknowledgment number should be acceptable in transition from SYN_RECEIVED -> CLOSE_WAIT"
+                    );
+
+                    if acked_syn_ack {
+                        let _ = conn.on_tick();
+                        prop_assert!(conn.retransmit_buf.is_empty(),
+                            "retransmission buffer should be empty in transition from SYN_RECEIVED -> CLOSE_WAIT"
+                        );
+                    }
+
+                    prop_assert_tcb!(&conn.snd,
+                        una: if acked_syn_ack { 1 } else { 0 },
+                        nxt: 1,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: if acked_syn_ack { seg.tcp.seq_number() } else { 0 },
+                        wl2: if acked_syn_ack { seg.tcp.ack_number() } else { 0 },
+                        iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        nxt: irs.wrapping_add(1), // Received FIN
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
+                        // To account for the TCB generation.
+                        irs: irs.wrapping_sub(1)
+                    );
+                }
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from SYN_RECEIVED -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() ||
+                        seg.tcp.syn() ||
+                        seg.tcp.ack(),
+                        "segment with either SYN, RST, or ACK could transition from SYN_RECEIVED -> CLOSED"
+                    );
+
+                    if seg.tcp.ack() && !seg.tcp.syn() && !seg.tcp.rst() {
+                        prop_assert!(
+                            !is_between_wrapped(
+                                conn.snd.una.wrapping_sub(1),
+                                seg.tcp.ack_number(),
+                                conn.snd.nxt.wrapping_add(1),
+                            ),
+                            "acknowledgment number from ACK segment should not be acceptable in transition from SYN_RECEIVED -> CLOSED"
+                        );
+                    }
+                }
+                _ => prop_assert!(false, "unexpected transition from SYN_RECEIVED -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_estab_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (mut conn, _maybe_syn_ack) = gen_tcb_with_state(ConnectionState::ESTABLISHED, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::ESTABLISHED);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            let _maybe_reply = conn.on_segment(&seg.tcp, &seg.payload);
+
+            match conn.state {
+                ConnectionState::ESTABLISHED => {}
+                ConnectionState::CLOSE_WAIT => {
+                    prop_assert!(
+                        (seg.tcp.ack() &&
+                            !seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()) ||
+                        (seg.tcp.ack() &&
+                            seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()
+                        ),
+                        "only FIN+ACK or FIN+ACK+PSH segment could transition from ESTABLISHED -> CLOSE_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from ESTABLISHED -> CLOSE_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_between_wrapped(
+                            conn.snd.una.wrapping_sub(1),
+                            seg.tcp.ack_number(),
+                            conn.snd.nxt.wrapping_add(1),
+                        ),
+                        "acknowledgment number should be acceptable in transition from ESTABLISHED -> CLOSE_WAIT"
+                    );
+
+                    let _ = conn.on_tick();
+                    prop_assert!(conn.retransmit_buf.is_empty(),
+                        "retransmission buffer should be empty in transition from ESTABLISHED -> CLOSE_WAIT"
+                    );
+
+                    let window_update = is_between_wrapped(
+                        conn.snd.una,
+                        seg.tcp.ack_number(),
+                        conn.snd.nxt.wrapping_add(1),
+                    );
+
+                    prop_assert_tcb!(&conn.snd,
+                        una: 1,
+                        nxt: 1,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        // If the window was not updated, WL1 remains with the
+                        // value of the last update (the `irs` when peer sends
+                        // ACK in response to SYN+ACK).
+                        wl1: if window_update { seg.tcp.seq_number() } else { irs },
+                        wl2: 1,
+                        iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        nxt: irs.wrapping_add(1), // Received FIN
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
+                        // To account for the TCB generation.
+                        irs: irs.wrapping_sub(1)
+                    );
+                }
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from ESTABLISHED -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() || seg.tcp.syn(),
+                        "segment with either SYN or RST could transition from ESTABLISHED -> CLOSED"
+                    );
+                }
+                _ => prop_assert!(false, "unexpected transition from ESTABLISHED -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_fin_wait_1_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (mut conn, _maybe_fin_ack) = gen_tcb_with_state(ConnectionState::FIN_WAIT_1, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::FIN_WAIT_1);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            let _maybe_reply = conn.on_segment(&seg.tcp, &seg.payload);
+
+            let acked_fin_ack = seg.tcp.ack_number() == conn.snd.nxt;
+            let acked_syn_ack = seg.tcp.ack_number() >= conn.snd.nxt - 1;
+
+            match conn.state {
+                ConnectionState::FIN_WAIT_1 => {}
+                ConnectionState::FIN_WAIT_2 => {
+                    prop_assert!(
+                        (seg.tcp.ack() &&
+                            !seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            !seg.tcp.fin()) ||
+                        (seg.tcp.ack() &&
+                            seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            !seg.tcp.fin()
+                        ),
+                        "only ACK or ACK+PSH segment could transition from FIN_WAIT_1 -> FIN_WAIT_2"
+                    );
+
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from FIN_WAIT_1 -> FIN_WAIT_2"
+                    );
+
+                    prop_assert!(
+                        is_between_wrapped(
+                            conn.snd.una.wrapping_sub(1),
+                            seg.tcp.ack_number(),
+                            conn.snd.nxt.wrapping_add(1),
+                        ),
+                        "acknowledgment number should be acceptable in transition from FIN_WAIT_1 -> FIN_WAIT_2"
+                    );
+
+                    if acked_fin_ack {
+                        let _ = conn.on_tick();
+                        prop_assert!(conn.retransmit_buf.is_empty(),
+                            "retransmission buffer should be empty in transition from FIN_WAIT_1 -> FIN_WAIT_2"
+                        );
+                    }
+
+                    prop_assert_tcb!(&conn.snd,
+                        una: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        nxt: 2,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: if acked_syn_ack || acked_fin_ack { seg.tcp.seq_number() } else { 0 },
+                        wl2: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        iss: 0
+                   );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        nxt: irs,
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
+                        // To account for the TCB generation.
+                        irs: irs.wrapping_sub(1)
+                    );
+                }
+                ConnectionState::TIME_WAIT => {
+                    prop_assert!(
+                        (seg.tcp.ack() &&
+                            !seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()) ||
+                        (seg.tcp.ack() &&
+                            seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()
+                        ),
+                        "only FIN+ACK or FIN+ACK+PSH segment could transition from FIN_WAIT_1 -> TIME_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from FIN_WAIT_1 -> TIME_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_between_wrapped(
+                            conn.snd.una.wrapping_sub(1),
+                            seg.tcp.ack_number(),
+                            conn.snd.nxt.wrapping_add(1),
+                        ),
+                        "acknowledgment number should be acceptable in transition from FIN_WAIT_1 -> TIME_WAIT"
+                    );
+
+                    if acked_fin_ack {
+                        let _ = conn.on_tick();
+                        prop_assert!(conn.retransmit_buf.is_empty(),
+                            "retransmission buffer should be empty in transition from FIN_WAIT_1 -> TIME_WAIT"
+                        );
+                    }
+
+                    prop_assert_tcb!(&conn.snd,
+                        una: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        nxt: 2,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: if acked_syn_ack || acked_fin_ack { seg.tcp.seq_number() } else { 0 },
+                        wl2: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        // Received a `FIN`.
+                        nxt: irs.wrapping_add(1),
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
+                        // To account for the TCB generation.
+                        irs: irs.wrapping_sub(1)
+                    );
+                }
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from FIN_WAIT_1 -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() || seg.tcp.syn(),
+                        "segment with either SYN or RST could transition from FIN_WAIT_1 -> CLOSED"
+                    );
+                }
+                _ => prop_assert!(false, "unexpected transition from FIN_WAIT_1 -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_fin_wait_2_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (mut conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::FIN_WAIT_2, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::FIN_WAIT_2);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            let _maybe_reply = conn.on_segment(&seg.tcp, &seg.payload);
+
+            match conn.state {
+                ConnectionState::FIN_WAIT_2 => {}
+                ConnectionState::TIME_WAIT => {
+                    prop_assert!(
+                        (seg.tcp.ack() &&
+                            !seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()) ||
+                        (seg.tcp.ack() &&
+                            seg.tcp.psh() &&
+                            !seg.tcp.rst() &&
+                            !seg.tcp.syn() &&
+                            seg.tcp.fin()
+                        ),
+                        "only FIN+ACK or FIN+ACK+PSH segment could transition from FIN_WAIT_2 -> TIME_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from FIN_WAIT_2 -> TIME_WAIT"
+                    );
+
+                    prop_assert!(
+                        is_between_wrapped(
+                            conn.snd.una.wrapping_sub(1),
+                            seg.tcp.ack_number(),
+                            conn.snd.nxt.wrapping_add(1),
+                        ),
+                        "acknowledgment number should be acceptable in transition from FIN_WAIT_2 -> TIME_WAIT"
+                    );
+
+                    let _ = conn.on_tick();
+                    prop_assert!(conn.retransmit_buf.is_empty(),
+                        "retransmission buffer should be empty in transition from FIN_WAIT_2 -> TIME_WAIT"
+                    );
+
+                    prop_assert_tcb!(&conn.snd,
+                        una: 2,
+                        nxt: 2,
+                        wnd: seg.tcp.window(),
+                        up: seg.tcp.urgent_pointer(),
+                        wl1: irs,
+                        wl2: 2,
+                        iss: 0
+                    );
+
+                    prop_assert_tcb!(&conn.rcv,
+                        // Received a `FIN`.
+                        nxt: irs.wrapping_add(1),
+                        wnd: RCV_WND_SIZE,
+                        up: 0,
+                        // To account for the TCB generation.
+                        irs: irs.wrapping_sub(1)
+                    );
+                }
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from FIN_WAIT_2 -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() || seg.tcp.syn(),
+                        "segment with either SYN or RST could transition from FIN_WAIT_2 -> CLOSED"
+                    );
+                }
+                _ => prop_assert!(false, "unexpected transition from FIN_WAIT_2 -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_close_wait_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::CLOSE_WAIT, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::CLOSE_WAIT);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            match conn.state {
+                ConnectionState::CLOSE_WAIT => {}
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from CLOSE_WAIT -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() || seg.tcp.syn(),
+                        "segment with either SYN or RST could transition from CLOSE_WAIT -> CLOSED"
+                    );
+                }
+                _ => prop_assert!(false, "unexpected transition from CLOSE_WAIT -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_last_ack_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::LAST_ACK, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::LAST_ACK);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            match conn.state {
+                ConnectionState::LAST_ACK => {}
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from LAST_ACK -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() || seg.tcp.syn() || seg.tcp.ack(),
+                        "segment with either ACK, SYN, or RST could transition from LAST_ACK -> CLOSED"
+                    );
+
+                    if seg.tcp.ack() && !seg.tcp.syn() && !seg.tcp.rst() {
+                        prop_assert!(
+                            is_between_wrapped(
+                                conn.snd.una.wrapping_sub(1),
+                                seg.tcp.ack_number(),
+                                conn.snd.nxt.wrapping_add(1),
+                            ),
+                            "acknowledgment number from ACK segment should be acceptable in transition from LAST_ACK -> CLOSED"
+                        );
+                    }
+                }
+                _ => prop_assert!(false, "unexpected transition from LAST_ACK -> {:?}", conn.state),
+            }
+        }
+
+        #[test]
+        fn fsm_time_wait_transitions(seg in arb_segment()) {
+            // For any arbitrary segment, if we back-compute the IRS and build
+            // up the TCB to a target state using it, then the generated TCB
+            // will contain synthetic but valid state, essentially building a
+            // consistent history up until this arbitrary segment.
+            let seg_len = seg.tcp.syn() as u32 + seg.tcp.fin() as u32 + seg.payload.len() as u32;
+            let irs = seg.tcp.seq_number().wrapping_sub(seg_len);
+
+            let (conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::TIME_WAIT, irs, seg.tcp.window());
+
+            prop_assert_eq!(conn.state, ConnectionState::TIME_WAIT);
+            prop_assert_eq!(conn.rcv.nxt, irs);
+
+            match conn.state {
+                ConnectionState::TIME_WAIT => {}
+                ConnectionState::CLOSED => {
+                    prop_assert!(
+                        is_valid_seq(
+                            seg.tcp.seq_number(),
+                            seg_len,
+                            conn.rcv.nxt,
+                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                        ),
+                        "sequence number should be valid in transition from TIME_WAIT -> CLOSED"
+                    );
+
+                    prop_assert!(
+                        seg.tcp.rst() || seg.tcp.syn(),
+                        "segment with either SYN or RST could transition from TIME_WAIT -> CLOSED"
+                    );
+                }
+                _ => prop_assert!(false, "unexpected transition from TIME_WAIT -> {:?}", conn.state),
             }
         }
     }
