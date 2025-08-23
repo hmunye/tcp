@@ -447,13 +447,11 @@ pub fn event_loop(state: Arc<State>, open_kind: OpenKind, sock_addr: SocketAddr)
 
                                                     if let ConnectionState::TIME_WAIT
                                                     | ConnectionState::CLOSED = conn_state
-                                                    {
-                                                        if let Some(tx) =
+                                                        && let Some(tx) =
                                                             pending_close.get_mut(&socket)
-                                                        {
-                                                            let _ = tx.send(());
-                                                            pending_close.remove(&socket);
-                                                        }
+                                                    {
+                                                        let _ = tx.send(());
+                                                        pending_close.remove(&socket);
                                                     }
 
                                                     if conn_state == ConnectionState::CLOSED {

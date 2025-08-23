@@ -1,0 +1,93 @@
+# This workflow runs the test suite whenever a PR is opened or updated, or a 
+# commit is pushed to main. It runs several checks:
+#
+# - required: runs the test suite on ubuntu with stable and beta toolchains
+# - minimal: runs the test suite with the minimal versions of the dependencies 
+#   that satisfy the requirements of this crate, and its dependencies
+# - os-check: runs the test suite for the mac and windows platforms
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+name: test
+jobs:
+  required:
+    runs-on: ubuntu-latest
+    name: ubuntu / ${{ matrix.toolchain }}
+    strategy:
+      matrix:
+        # Run on stable and beta to ensure that tests won't break on the next 
+        # version of the rust toolchain.
+        toolchain: [stable, beta]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # tag=v4.2.2
+        with:
+          submodules: true
+      - name: install ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - name: cargo generate-lockfile
+        # Enable this CI template to run regardless of whether the lockfile is 
+        # checked in or not.
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: cargo test --locked
+        run: cargo test --locked --all-features --all-targets
+      - name: cargo test --doc
+        run: cargo test --locked --all-features --doc
+  minimal:
+    # This action chooses the oldest version of the dependencies permitted by 
+    # Cargo.toml to ensure that this crate is compatible with the minimal 
+    # version that this crate and its dependencies require. 
+    #
+    # This action is run on ubuntu with the stable toolchain, as it is not 
+    # expected to fail.
+    runs-on: ubuntu-latest
+    name: ubuntu / stable / minimal-versions
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # tag=v4.2.2
+        with:
+          submodules: true
+      - name: install stable
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+        with:
+          toolchain: stable
+      - name: install nightly for -Zminimal-versions
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+        with:
+          toolchain: nightly
+      - name: rustup default stable
+        run: rustup default stable
+      - name: cargo update -Zminimal-versions
+        run: cargo +nightly update -Zminimal-versions
+      - name: cargo test
+        run: cargo test --locked --all-features --all-targets
+  os-check:
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} / stable
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # tag=v4.2.2
+        with:
+          submodules: true
+      - name: install stable
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+        with:
+          toolchain: stable
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: cargo test
+        run: cargo test --locked --all-features --all-targets
