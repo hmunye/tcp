@@ -4,7 +4,7 @@
 # - required: runs the test suite on ubuntu with stable and beta toolchains
 # - minimal: runs the test suite with the minimal versions of the dependencies 
 #   that satisfy the requirements of this crate, and its dependencies
-# - os-check: runs the test suite (`tcp-core`) for the mac and windows platforms
+# - os-check: runs the test suite for `tcp-core` on mac and windows platforms
 permissions:
   contents: read
 
