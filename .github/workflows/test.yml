@@ -89,5 +89,5 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
-      - name: cargo test
+      - name: cargo test -p tcp-core
         run: cargo test --locked --all-features --all-targets -p tcp-core
