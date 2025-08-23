@@ -2,7 +2,6 @@
 
 set -euo pipefail
 
-# Debug builds will include logs.
 if [[ "${DEBUG:-0}" == "1" ]]; then
     BUILD_MODE="debug"
 else

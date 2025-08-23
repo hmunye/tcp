@@ -393,8 +393,8 @@ impl TCB {
     }
 
     /// Returns `PSH+ACK` segments derived from the data provided to transmit
-    /// to the peer of the connection. If the peer's send window is 0, data is
-    /// buffered and no segments are returned.
+    /// to the peer of the connection and the number of bytes written. If the
+    /// peer's send window is 0, data is buffered and no segments are returned.
     ///
     /// No application data will be segmented until the connection is in a
     /// fully established state ready for sending data (`ESTABLISHED` or `CLOSE_WAIT`).
@@ -403,7 +403,7 @@ impl TCB {
     ///
     /// Returns an error if any `PSH+ACK` segments could not be constructed or
     /// the connection is in an invalid state for sending data.
-    pub fn send(&mut self, buf: &[u8]) -> Result<VecDeque<TcpSegment>> {
+    pub fn send(&mut self, buf: &[u8]) -> Result<(VecDeque<TcpSegment>, usize)> {
         if !matches!(
             self.state,
             ConnectionState::ESTABLISHED | ConnectionState::CLOSE_WAIT,
@@ -421,7 +421,7 @@ impl TCB {
             );
 
             self.snd_buf.push_back(buf[..].to_vec());
-            return Ok(Default::default());
+            return Ok((Default::default(), 0));
         }
 
         // Respect the transmitted MSS and the SND.WND of the peer.
@@ -460,7 +460,11 @@ impl TCB {
             }
         }
 
-        Ok(psh_acks)
+        if pos > buf.len() {
+            pos = buf.len();
+        }
+
+        Ok((psh_acks, pos))
     }
 
     /// Writes to the provided buffer with in-order buffered data received from
@@ -487,7 +491,7 @@ impl TCB {
         let min = usize::min(self.usr_buf.len(), buf.len());
 
         let drained = self.usr_buf.drain(..min);
-        buf.copy_from_slice(drained.as_slice());
+        buf[..min].copy_from_slice(drained.as_slice());
 
         self.rcv.wnd = self.rcv.wnd.saturating_add(min as u16);
 
@@ -521,16 +525,16 @@ impl TCB {
                 )))
             }
             ConnectionState::SYN_RECEIVED | ConnectionState::ESTABLISHED => {
-                let fin_ack = self.create_fin_ack(&[])?;
-
-                self.state = ConnectionState::FIN_WAIT_1;
-                self.snd.nxt = self.snd.nxt.wrapping_add(1);
-
                 debug!(
                     "[{}] ({state:?}) close call received, constructing FIN+ACK: {state:?} -> FIN_WAIT_1",
                     self.sock,
                     state = self.state
                 );
+
+                let fin_ack = self.create_fin_ack(&[])?;
+
+                self.state = ConnectionState::FIN_WAIT_1;
+                self.snd.nxt = self.snd.nxt.wrapping_add(1);
 
                 Ok(Some(fin_ack))
             }
@@ -1359,6 +1363,11 @@ impl TCB {
 
         // No segments on retransmission queue.
         (Duration::MAX, Default::default())
+    }
+
+    /// Returns the current size of the user receive buffer.
+    pub fn recv_buf_len(&self) -> usize {
+        self.usr_buf.len()
     }
 
     /// Creates a `SYN` segment to initiate a connection request.

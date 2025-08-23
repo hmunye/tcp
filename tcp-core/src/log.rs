@@ -14,7 +14,7 @@ macro_rules! error {
 macro_rules! warn {
     ($($arg:tt)+) => {{
         #[cfg(debug_assertions)]
-        eprintln!("[\x1b[1;33mWARN\x1b[0m] {}", format!($($arg)+));
+        eprintln!("[\x1b[1;33mWARN \x1b[0m] {}", format!($($arg)+));
     }};
 }
 
@@ -32,6 +32,6 @@ macro_rules! debug {
 macro_rules! info {
     ($($arg:tt)+) => {{
         #[cfg(debug_assertions)]
-        println!("[\x1b[1;32mINFO\x1b[0m] {}", format!($($arg)+));
+        println!("[\x1b[1;32mINFO \x1b[0m] {}", format!($($arg)+));
     }};
 }

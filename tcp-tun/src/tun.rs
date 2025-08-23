@@ -1,4 +1,9 @@
-//! TUN (network TUNnel) virtual network device.
+//! TUN/TAP provides packet reception and transmission for user space programs.
+//!
+//! It can be seen as a simple Point-to-Point or Ethernet device, which, instead
+//! of receiving packets from physical media, receives them from the user space
+//! program and instead of sending packets via physical media writes them to the
+//! user space program.
 
 use tcp_core::Result;
 
@@ -25,7 +30,7 @@ pub struct Tun {
 }
 
 impl Tun {
-    /// Creates a new TUN virtual network device.
+    /// Creates a new `TUN`.
     ///
     /// Packets received on this device will have the following structure:
     ///
@@ -39,13 +44,14 @@ impl Tun {
     ///
     /// Returns an error if the TUN device cannot be opened, for example, due
     /// to the absence of `CAP_NET_ADMIN` privilege.
+    #[allow(dead_code)]
     pub fn new() -> Result<Self> {
         Self::open_tun(true)
     }
 
-    /// Creates a new TUN virtual network device without packet information.
+    /// Creates a new `TUN` without packet information.
     ///
-    /// Packets received on this device will EXCLUDE the leading 4 bytes of
+    /// Packets received on this device will exclude the leading 4 bytes of
     /// packet information:
     ///
     /// - Flags [2 bytes]
@@ -63,12 +69,12 @@ impl Tun {
         Self::open_tun(false)
     }
 
-    /// Returns the raw file descriptor of the TUN virtual network device.
+    /// Returns the raw file descriptor of the `TUN`.
     pub fn fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
 
-    /// Receives an IP packet from the TUN virtual network device.
+    /// Receives an IP packet from the `TUN`.
     ///
     /// By default, this call blocks until an IP packet is available for
     /// reading.
@@ -79,7 +85,7 @@ impl Tun {
         (&self.fd).read(buf).map_err(|err| err.into())
     }
 
-    /// Sends an IP packet to the TUN virtual network device.
+    /// Sends an IP packet to the `TUN`.
     ///
     /// The caller must ensure the packet size does not exceed `MTU_SIZE` and
     /// that it is properly formatted with the necessary headers.
@@ -92,7 +98,7 @@ impl Tun {
         (&self.fd).write(buf).map_err(|err| err.into())
     }
 
-    /// Configures the TUN virtual network device to be non-blocking.
+    /// Configures the `TUN` to be non-blocking.
     ///
     /// This affects the behavior of the [Tun::send] and [Tun::recv] methods if
     /// configured.
@@ -102,11 +108,13 @@ impl Tun {
         // Get the current flags so they can be combined with `O_NONBLOCK`.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if flags == -1 {
-            return Err(errno!("failed to get flags of TUN file handle"));
+            return Err(errno!("failed to get flags for TUN file handle"));
         }
 
         if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-            return Err(errno!("failed to set TUN file handle to non-blocking"));
+            return Err(errno!(
+                "failed to configure TUN file handle as non-blocking"
+            ));
         }
 
         Ok(())
@@ -128,7 +136,7 @@ impl Tun {
             libc::IFF_TUN | libc::IFF_NO_PI
         };
 
-        // Name given to the TUN device in `script.sh`.
+        // Name given to the TUN device in `setup.sh`.
         let dev = "tun0";
 
         unsafe {
@@ -142,7 +150,9 @@ impl Tun {
         ifr.ifr_ifru.ifru_flags = flags as i16;
 
         if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TUNSETIFF, &ifr) } == -1 {
-            return Err(errno!("failed to update TUN packet info flag"));
+            return Err(errno!(
+                "failed to configure packet information for TUN file handle "
+            ));
         }
 
         Ok(Self { fd })

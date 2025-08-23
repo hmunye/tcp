@@ -35,13 +35,13 @@ To build the program and set up the TUN device, run:
 
 The script will:
 
-- Create a TUN device (`tun0`) and bring it up
-- Assign the local IP `10.0.0.1/32` to the TUN device and configure a peer IP of `10.0.0.2`
 - Compile the crate in release mode
 - Set `CAP_NET_ADMIN` privileges for the binary
+- Create a TUN device (`tun0`) and bring it up
+- Assign the local IP `10.0.0.1/32` to the TUN device and configure a peer IP of `10.0.0.2`
 
-If you want to build the program with logging enabled for TCP events, run the script with the 
-`DEBUG=1` environment variable set:
+To build the program with logging enabled for TCP events, run the script with the `DEBUG=1` 
+environment variable set:
 
 ```bash
 DEBUG=1 ./setup.sh
@@ -49,20 +49,20 @@ DEBUG=1 ./setup.sh
 
 To run the prepared binary, use one of the following commands:
 
-If you built in release mode (default):
+Built in release mode (default):
 
 ```bash
 cargo r --release
 ```
 
-If you built in debug mode with `DEBUG=1`:
+Built in debug mode with logging enabled:
 
 ```bash
 cargo r
 ```
 
-You can then use `10.0.0.1` as the source and `10.0.0.2` as the destination to initiate or accept TCP 
-connections.
+You can now use `10.0.0.1` as the source IP address and `10.0.0.2` as the destination to initiate or 
+accept TCP connections.
 
 Examples:
 
@@ -73,6 +73,8 @@ curl --interface 10.0.0.1 http://10.0.0.2
 ```bash
 nc -s 10.0.0.1 10.0.0.2 80
 ```
+
+Replies to TCP segments should also be sent using the locally assigned IP `10.0.0.1`.
 
 To delete the TUN device after use, run the cleanup script:
 

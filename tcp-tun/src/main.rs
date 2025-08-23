@@ -1,19 +1,35 @@
-use tcp_core::Result;
-use tcp_core::protocol::fsm::TCB;
-use tcp_core::protocol::socket::Socket;
+use tcp_core::{Result, info};
 
-use std::collections::HashMap;
+use std::io::{Read, Write};
 
-use tcp_tun::net::event_loop;
-use tcp_tun::tun_tap::tun;
+use tcp_tun::net::{TcpListener, TcpStream};
 
-fn main() -> Result<()> {
-    let mut nic = tun::Tun::without_packet_info()?;
-    nic.set_non_blocking()?;
+fn handle_client(mut stream: TcpStream) -> Result<()> {
+    let mut buf = [0u8; 1024];
 
-    let mut conns: HashMap<Socket, TCB> = Default::default();
+    loop {
+        let nbytes = stream.read(&mut buf[..])?;
+        info!("read {nbytes} bytes from peer: {}", unsafe {
+            std::str::from_utf8_unchecked(&buf[..])
+        });
 
-    event_loop(&mut nic, &mut conns)?;
+        let written = stream.write(&buf[..nbytes])?;
+        info!("wrote {nbytes} bytes to the peer");
+
+        if written == 0 {
+            break;
+        }
+    }
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let listener = TcpListener::bind(80)?;
+
+    loop {
+        let stream = listener.accept()?;
+        info!("accepted connection from {:?}", stream.peer_addr());
+        handle_client(stream)?;
+    }
 }
