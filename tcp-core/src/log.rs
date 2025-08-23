@@ -1,4 +1,4 @@
-//! Macros for logging TCP-related events in debug builds.
+//! Macros for logging TCP-related events (debug builds only).
 
 /// Prints an error-level log message to `stderr` (debug builds only).
 #[macro_export]
