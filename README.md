@@ -3,7 +3,8 @@
 A **user-space Transmission Control Protocol (TCP) implementation in Rust**, designed for 
 experimentation and learning.
 
-![Version](https://img.shields.io/badge/version-v0.1.0-orange?style=flat)
+<img src="https://img.shields.io/badge/version-v0.1.0-orange?style=flat" alt="version" />
+
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/hmunye/tcp/blob/main/LICENSE)
 [![Build Status](https://github.com/hmunye/tcp/workflows/CI/badge.svg)](https://github.com/hmunye/tcp/actions?query=workflow%3ACI+branch%3Amain)
 [![Dependency Status](https://deps.rs/repo/github/hmunye/tcp/status.svg)](https://deps.rs/repo/github/hmunye/tcp)
