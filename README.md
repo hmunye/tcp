@@ -3,6 +3,10 @@
 A **user-space Transmission Control Protocol (TCP) implementation in Rust**, designed for 
 experimentation and learning.
 
+[![MIT Licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/hmunye/tcp/blob/main/LICENSE)
+[![Build Status](https://github.com/hmunye/tcp/workflows/check/badge.svg)](https://github.com/hmunye/tcp/actions?query=workflow%3Acheck+branch%3Amain)
+[![Dependency Status](https://deps.rs/repo/github/hmunye/tcp/status.svg)](https://deps.rs/repo/github/hmunye/tcp)
+
 This project is organized as a Cargo workspace with three crates:
 
 - **`tcp-core`**: A minimal, dependency-free TCP (primarily RFC 793) crate that implements the state 
