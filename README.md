@@ -3,7 +3,7 @@
 A **user-space Transmission Control Protocol (TCP) implementation in Rust**, designed for 
 experimentation and learning.
 
-![Version](https://img.shields.io/badge/version-v0.1.0-orange?style=flat)
+![Version](https://img.shields.io/badge/tcp-core-v0.1.0-orange?style=flat)
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/hmunye/tcp/blob/main/LICENSE)
 [![Build Status](https://github.com/hmunye/tcp/workflows/CI/badge.svg)](https://github.com/hmunye/tcp/actions?query=workflow%3ACI+branch%3Amain)
 [![Dependency Status](https://deps.rs/repo/github/hmunye/tcp/status.svg)](https://deps.rs/repo/github/hmunye/tcp)
@@ -21,12 +21,23 @@ interactive TCP simulations
 
 ## Quick Start
 
-Clone the repository:
+To include the `tcp-core` crate in your project as a dependency:
+
+```bash
+cargo add --git https://github.com/hmunye/tcp.git tcp-core
+```
+
+To build and run either `tcp-tun` or `tcp-wasm`, clone the repository:
 
 ```bash
 git clone https://github.com/hmunye/tcp.git
 cd tcp
 ```
+
+Then, follow the individual quick start guides for each crate:
+
+- [`tcp-tun` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-tun#quick-start) – Linux-only TUN-based integration  
+- [`tcp-wasm` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-wasm#quick-start) – WebAssembly UI for interactive TCP simulation
 
 ## License
 
