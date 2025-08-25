@@ -7,14 +7,10 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/hmunye/tcp"
 description = """
-WebAssembly wrapper exposing tcp-core to a Svelte UI for interactive TCP 
-simulations.
+WebAssembly wrapper for tcp-core enabling interactive web-based TCP simulations.
 """
 categories = ["wasm"]
-keywords = ["webassembly", "wasm", "network"]
-
-[package.metadata.docs.rs]
-no-deps = true
+keywords = ["webassembly", "wasm"]
 
 [dependencies]
 tcp-core = { path = "../tcp-core" }

@@ -15,6 +15,9 @@ compile_error!(
 
 pub mod net;
 
+pub(crate) mod event_loop;
+pub(crate) mod tun;
+
 /// Creates a [tcp_core::Error::Io] with a message prefixed to the `errno` value.
 macro_rules! errno {
     ($($arg:tt)+) => {{
@@ -23,7 +26,4 @@ macro_rules! errno {
         tcp_core::Error::Io(::std::io::Error::new(errno.kind(), format!("{prefix}: {errno}")))
     }};
 }
-
 pub(crate) use errno;
-pub(crate) mod event_loop;
-pub(crate) mod tun;

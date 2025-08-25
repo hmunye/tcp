@@ -15,8 +15,7 @@ machine, packet parsing/serialization, and segment construction
 - **`tcp-tun`**: Linux-only crate that integrates with the network stack via TUN/TAP, using `epoll` 
 for single-threaded, non-blocking I/O
 
-- **`tcp-wasm`**: WebAssembly crate exposing `tcp-core` to a [Svelte](https://svelte.dev/) UI for 
-interactive TCP simulations
+- **`tcp-wasm`**: WebAssembly wrapper for `tcp-core` enabling interactive web-based TCP simulations.
 
 ## Quick Start
 
@@ -33,10 +32,10 @@ git clone https://github.com/hmunye/tcp.git
 cd tcp
 ```
 
-Then, follow the individual quick start guides for each crate:
+Then, follow the individual quick start guides for either crate:
 
-- [`tcp-tun` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-tun#quick-start) – Linux-only TUN-based integration  
-- [`tcp-wasm` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-wasm#quick-start) – WebAssembly UI for interactive TCP simulation
+- [`tcp-tun` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-tun#quick-start)
+- [`tcp-wasm` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-wasm#quick-start)
 
 ## License
 

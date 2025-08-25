@@ -322,9 +322,7 @@ impl Ipv4Header {
     /// The caller must ensure the checksum is computed and updated before
     /// writing the header.
     pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
-        output.write_all(&self.to_be_bytes())?;
-
-        Ok(())
+        Ok(output.write_all(&self.to_be_bytes())?)
     }
 }
 
@@ -362,6 +360,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
             total_len: {
                 let total_len = u16::from_be_bytes([header_raw[2], header_raw[3]]);
 
+                // Total length is less than the header length.
                 if total_len < ((version_ihl & 0xF) << 2) as u16 {
                     return Err(Error::Parse(ParseError::InvalidTotalLength {
                         provided: total_len,

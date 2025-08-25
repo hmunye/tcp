@@ -1,11 +1,11 @@
-//! Error types for IPv4/TCP header and TCP segment handling.
+//! Error types for IPv4/TCP header and segment handling.
 
 use std::{error, fmt, io, result};
 
 /// A convenience wrapper around `Result` for `tcp_core::Error`.
 pub type Result<T> = result::Result<T, Error>;
 
-/// Set of errors that can occur in IPv4/TCP header and TCP segment handling.
+/// Set of errors that can occur in IPv4/TCP header and segment handling.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {

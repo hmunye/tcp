@@ -1,9 +1,14 @@
 # tcp-wasm
 
-WebAssembly wrapper exposing [tcp-core] to a [Svelte](https://svelte.dev/) UI for interactive TCP 
-simulations.
+WebAssembly wrapper for [tcp-core] enabling interactive web-based TCP simulations.
 
 [tcp-core]: https://github.com/hmunye/tcp/tree/main/tcp-core
+
+## TOC
+* [Quick Start](#quick-start)
+* [License](#license)
+
+## Quick Start
 
 ## License
 

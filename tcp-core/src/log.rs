@@ -1,6 +1,6 @@
-//! Macros for logging TCP-related events (only for debug builds).
+//! Macros for logging TCP-related events.
 
-/// Prints an error-level log message to `stderr` (only for debug builds).
+/// Prints an error-level log message to `stderr` (only in debug builds).
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)+) => {{
@@ -9,7 +9,7 @@ macro_rules! error {
     }};
 }
 
-/// Prints a warn-level log message to `stderr` (only for debug builds).
+/// Prints a warn-level log message to `stderr` (only in debug builds).
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)+) => {{
@@ -18,7 +18,7 @@ macro_rules! warn {
     }};
 }
 
-/// Prints a debug-level log message to `stdout` (only for debug builds).
+/// Prints a debug-level log message to `stdout` (only in debug builds).
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)+) => {{
@@ -27,7 +27,7 @@ macro_rules! debug {
     }};
 }
 
-/// Prints an info-level log message to `stdout` (only for debug builds).
+/// Prints an info-level log message to `stdout` (only in debug builds).
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)+) => {{

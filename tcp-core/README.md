@@ -16,16 +16,16 @@ on [RFC 793](https://www.rfc-editor.org/rfc/rfc793).
 ## Features
 
 - Full TCP connection lifecycle: initiation (SYN), termination (FIN), and reset (RST)
-- Bidirectional connection establishment
+- Bidirectional connection establishment and termination
 - TIME-WAIT state handling
-- Retransmission tracking with exponential backoff and retry limit
+- Retransmission tracking logic with exponential backoff and retry limit
 - Out-of-order segment reordering and payload reassembly
 - Flow control via SND/RCV windows and peer MSS
 - Raw IPv4/TCP header parsing and construction with checksum validation
 
 ## Testing
 
-Run unit tests for IPv4/TCP header parsing/serialization and state machine logic with:
+Run unit tests for header parsing/serialization and state machine logic with:
 
 ```bash
 cargo t --release

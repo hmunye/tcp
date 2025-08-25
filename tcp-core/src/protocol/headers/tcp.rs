@@ -436,9 +436,8 @@ impl TcpHeader {
     /// writing the header.
     pub fn write<T: io::Write>(&self, output: &mut T) -> crate::Result<()> {
         let (raw_header, nbytes) = self.to_be_bytes();
-        output.write_all(&raw_header[..nbytes])?;
 
-        Ok(())
+        Ok(output.write_all(&raw_header[..nbytes])?)
     }
 }
 
@@ -592,6 +591,8 @@ impl TcpOptions {
                     // RFC 793 (3.1)
                     //
                     // ```text
+                    //                      |-- Length of the option
+                    //                      v
                     //          1        2        3         4
                     //        +--------+--------+---------+--------+
                     //        |00000010|00000100|   max seg size   |
@@ -630,6 +631,7 @@ impl TcpOptions {
 
             let opts_len = self.len();
 
+            // The MSS option would overflow the options buffer.
             if opts_len + Self::MSS_LEN > Self::MAX_OPTIONS_LEN {
                 return Err(Error::Header(HeaderError::InsufficientOptionSpace {
                     attempted_len: (opts_len + Self::MSS_LEN),
@@ -685,11 +687,11 @@ impl TryFrom<&[u8]> for TcpOptions {
 
         // Ensure that the options are aligned to a 4-byte boundary by adding
         // padding if necessary. A length that is a multiple of 4 will always
-        // have the last two bits set to 0.
+        // have the last two bits set to `00`.
         let padding = if len & 0b11 != 0 { 4 } else { 0 };
 
         Ok(Self {
-            // Truncate len to the nearest multiple of 4 before adding padding.
+            // Truncate `len` to the nearest multiple of 4 before adding padding.
             len: ((len >> 2) << 2) + padding,
             buf: {
                 let mut buf = [0; Self::MAX_OPTIONS_LEN];

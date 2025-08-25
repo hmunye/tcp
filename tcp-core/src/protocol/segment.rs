@@ -2,8 +2,8 @@
 
 use std::io::Write;
 
-use super::headers::{Ipv4Header, TcpHeader};
 use crate::Result;
+use crate::protocol::headers::{Ipv4Header, TcpHeader};
 
 /// Fully constructed TCP segment.
 #[derive(Debug)]

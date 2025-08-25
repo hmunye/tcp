@@ -1,13 +1,12 @@
-//! Networking primitives for [TCP] over [IPv4].
+//! Networking primitives for TCP over IPv4.
 //!
 //! This module implements components for the Transmission Control Protocol over
-//! IPv4, including IPv4/TCP header definitions, packet parsing/serialization,
-//! TCP segment construction, and the protocol state machine.
-//!
-//! [TCP]:  https://www.rfc-editor.org/rfc/rfc793
-//! [IPv4]: https://www.rfc-editor.org/rfc/rfc791
+//! IPv4, including socket definitions, IPv4/TCP header definitions, packet
+//! parsing/serialization, TCP segment construction, and the protocol state
+//! machine.
 
 pub mod fsm;
+
 pub mod headers;
 
 pub mod socket;

@@ -12,9 +12,6 @@ Linux-only crate enabling TUN/TAP networking for user-space TCP via tcp-core.
 categories = ["network-programming"]
 keywords = ["io", "network", "non-blocking"]
 
-[package.metadata.docs.rs]
-no-deps = true
-
 [dependencies]
 libc = "0.2.174"
 tcp-core = { path = "../tcp-core" }

@@ -18,13 +18,14 @@ This currently omits the following features and behaviors:
 
 - Assumes IP packets are fully reassembled (no handling of IP fragmentation)
 - No user-timeout support
+- Asynchronous operations are not supported (methods on TCP streams are blocking)
 
 ## Quick Start
 
 This crate is Linux-only due to dependencies on:
 
-- `epoll` for efficient single-threaded, non-blocking I/O
-- `/dev/net/tun` for handling raw IP network traffic
+- **`epoll`** for efficient single-threaded, non-blocking I/O
+- **`/dev/net/tun`** for handling raw IP network traffic
 
 To build the program and set up the TUN device, run:
 
@@ -35,7 +36,7 @@ To build the program and set up the TUN device, run:
 
 The script will:
 
-- Compile the crate in release mode
+- Compile the crate in release mode by default
 - Set `CAP_NET_ADMIN` privileges for the binary
 - Create a TUN device (`tun0`) and bring it up
 - Assign the local IP `10.0.0.1/32` to the TUN device and configure a peer IP of `10.0.0.2`
@@ -64,17 +65,7 @@ cargo r
 You can now use `10.0.0.1` as the source IP address and `10.0.0.2` as the destination to initiate or 
 accept TCP connections.
 
-Examples:
-
-```bash
-curl --interface 10.0.0.1 http://10.0.0.2
-```
-
-```bash
-nc -s 10.0.0.1 10.0.0.2 80
-```
-
-Replies to TCP segments should also be sent using the locally assigned IP `10.0.0.1`.
+Examples can be found [here](https://github.com/hmunye/tcp/tree/main/tcp-tun/examples).
 
 To delete the TUN device after use, run the cleanup script:
 
