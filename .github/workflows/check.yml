@@ -2,7 +2,8 @@
 # to main. It runs several checks:
 #
 # - fmt: checks that the code is formatted according to rustfmt
-# - clippy: checks that the code does not contain any clippy warnings
+# - clippy: checks that the code does not contain any clippy warnings and 
+#   ensures `tcp-core` compiles to WebAssembly
 # - doc: checks that the code can be documented without errors
 permissions:
   contents: read
@@ -52,8 +53,12 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
-      - name: cargo clippy
+      - name: cargo clippy (default)
         run: cargo clippy
+      - name: add wasm32 target for tcp-core
+        run: rustup target add wasm32-unknown-unknown
+      - name: cargo clippy (wasm)
+        run: cargo clippy -p tcp-core --target wasm32-unknown-unknown
   doc:
     # Run docs generation for the `tcp-core` crate on nightly rather than stable. 
     # This enables features like https://doc.rust-lang.org/beta/unstable-book/language-features/doc-cfg.html 

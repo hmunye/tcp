@@ -6,6 +6,6 @@ extern "C" {
 }
 
 #[wasm_bindgen]
-pub fn alert_rs() {
-    alert("tcp-wasm!");
+pub fn alert_rs(msg: &str) {
+    alert(msg);
 }
