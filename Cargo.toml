@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["tcp-core", "tcp-tun", "tcp-wasm"]
 
-# Tell `rustc` to optimize for small code size (WASM build).
-[profile.release.package.tcp-wasm]
-opt-level = "s"
+[profile.release-wasm]
+inherits = "release"
+lto = true # Compile with Link Time Optimizations
+opt-level = "s" # Tell `rustc` to optimize for small code size
