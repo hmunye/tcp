@@ -15,13 +15,11 @@
 //!
 //!     nc -s 10.0.0.1 10.0.0.2 80
 
-use tcp_tun::net::{Socket, TcpListener, TcpStream};
-
-use tcp_core::info;
+use tcp_tun::net::{TcpListener, TcpStream};
 
 use std::io::{self, Read, Write};
 
-fn handle_client(mut stream: TcpStream, sock: Socket) -> io::Result<()> {
+fn handle_client(mut stream: TcpStream) -> io::Result<()> {
     let mut buf = [0u8; 1024];
 
     loop {
@@ -30,19 +28,10 @@ fn handle_client(mut stream: TcpStream, sock: Socket) -> io::Result<()> {
             break;
         }
 
-        let data = unsafe { std::str::from_utf8_unchecked(&buf[..nbytes]) };
-
-        info!(
-            "[{sock}] read {nbytes} bytes from peer: {}",
-            data.escape_debug()
-        );
-
         let written = stream.write(&buf[..nbytes])?;
         if written == 0 {
             break;
         }
-
-        info!("[{sock}] wrote {written} bytes to peer");
     }
 
     Ok(())
@@ -56,15 +45,7 @@ fn main() -> io::Result<()> {
 
     for stream in listener.incoming() {
         let stream = stream?;
-
-        let sock = Socket {
-            src: stream.local_addr(),
-            dst: stream.peer_addr(),
-        };
-
-        info!("[{sock}] accepted new connection");
-
-        std::thread::spawn(move || handle_client(stream, sock).unwrap());
+        std::thread::spawn(move || handle_client(stream).unwrap());
     }
 
     Ok(())

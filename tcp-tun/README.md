@@ -14,11 +14,17 @@ Linux-only crate enabling TUN/TAP networking for user-space TCP via [tcp-core], 
 
 ## Limitations
 
-This currently omits the following features and behaviors:
+This currently omits, but is not limited to, the following features and behaviors:
 
 - Assumes IP packets are fully reassembled (no handling of IP fragmentation)
 - No user-timeout support
-- Asynchronous operations are not supported (methods on TCP streams are blocking)
+- No asynchronous operations (methods on TCP streams are blocking)
+- No proper demultiplexing (without an intermediary, multiple connections read directly from the TUN, 
+  causing packet to be misrouted or dropped)
+- No connection-idle timeout (e.g., peer sends a `FIN+ACK` segment, local side of the connection 
+  transitions to `CLOSE_WAIT`, and connection remains idle)
+- Incomplete pending `send`/`recv` request handling
+- Pending operations are not guaranteed to return when expected (may linger for longer)
 
 ## Quick Start
 

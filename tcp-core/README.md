@@ -33,7 +33,7 @@ cargo t --release
 
 ## Limitations
 
-This implementation currently omits several features and behaviors, including:
+This currently omits, but is not limited to, the following features and behaviors:
 
 - Handling of buffered application data (currently buffered, not drained)
 - No zero-window probing

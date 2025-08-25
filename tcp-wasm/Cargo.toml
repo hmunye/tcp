@@ -12,5 +12,9 @@ WebAssembly wrapper for tcp-core enabling interactive web-based TCP simulations.
 categories = ["wasm"]
 keywords = ["webassembly", "wasm"]
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 tcp-core = { path = "../tcp-core" }
+wasm-bindgen = "0.2.100"

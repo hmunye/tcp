@@ -27,7 +27,6 @@ fn main() -> io::Result<()> {
 
     loop {
         let _ = io::stdin().read_line(&mut buf)?;
-
         if buf == "exit\n" {
             break;
         }

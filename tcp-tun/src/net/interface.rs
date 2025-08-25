@@ -2,8 +2,6 @@
 //!
 //! [std::net]: https://doc.rust-lang.org/std/net/index.html
 
-// TODO: implement incoming iterator
-
 use tcp_core::Error;
 use tcp_core::protocol::{Socket, SocketAddr};
 
@@ -307,9 +305,10 @@ pub struct TcpStream {
     read_channel: ReadChannel,
     /// Local and peer socket addresses of the connection.
     sock: Socket,
-    /// Value set to `true` if the `TcpStream` was created from a
-    /// [TcpStream::connect] call.
+    /// Value is `true` if the `TcpStream` was created from [TcpStream::connect].
     is_connect: bool,
+    /// Value is `true` if the `TcpStream` has been manually shutdown.
+    has_shutdown: bool,
 }
 
 impl TcpStream {
@@ -325,6 +324,7 @@ impl TcpStream {
             read_channel,
             sock,
             is_connect: false,
+            has_shutdown: false,
         }
     }
 
@@ -401,6 +401,7 @@ impl TcpStream {
                 dst: peer_addr,
             },
             is_connect: true,
+            has_shutdown: false,
         })
     }
 
@@ -452,16 +453,24 @@ impl TcpStream {
     /// forcefully terminated and will cause all pending and future I/O to
     /// return immediately.
     ///
+    /// # Note
+    ///
+    /// Deviates from [std::net::TcpStream::shutdown] in that the `Shutdown`
+    /// only contains two variants: `Close` and `Abort`, both of which attempt
+    /// to fully close the connection. The method also takes a mutable rather
+    /// than immutable `self` so the `TcpStream` can be marked as already
+    /// shutdown.
+    ///
     /// # Examples
     ///
     /// ```no_run
     /// use tcp_tun::net::{Shutdown, TcpStream};
     ///
-    /// let stream = TcpStream::connect("10.0.0.1:8080")
+    /// let mut stream = TcpStream::connect("10.0.0.1:8080")
     ///                        .expect("Couldn't connect to the server...");
     /// stream.shutdown(Shutdown::Abort).expect("shutdown call failed");
     /// ```
-    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+    pub fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
         let (tx, rx) = mpsc::channel();
 
         {
@@ -482,13 +491,17 @@ impl TcpStream {
         // Blocks until the connection is closed.
         let _ = rx.recv();
 
+        self.has_shutdown = true;
+
         Ok(())
     }
 }
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        let _ = self.shutdown(Shutdown::Abort);
+        if !self.has_shutdown {
+            let _ = self.shutdown(Shutdown::Abort);
+        }
 
         // If the `TcpStream` created the `event_fd`, then close the file
         // descriptor.
