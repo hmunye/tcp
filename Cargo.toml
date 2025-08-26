@@ -1,8 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["tcp-core", "tcp-tun", "tcp-wasm"]
-
-[profile.release-wasm]
-inherits = "release"
-lto = true # Compile with Link Time Optimizations
-opt-level = "s" # Tell `rustc` to optimize for small code size
+members = ["tcp-core", "tcp-tun"]

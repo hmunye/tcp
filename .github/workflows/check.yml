@@ -2,8 +2,7 @@
 # to main. It runs several checks:
 #
 # - fmt: checks that the code is formatted according to rustfmt
-# - clippy: checks that the code does not contain any clippy warnings and 
-#   ensures `tcp-core` compiles to WebAssembly
+# - clippy: checks that the code does not contain any clippy warnings
 # - doc: checks that the code can be documented without errors
 permissions:
   contents: read
@@ -53,15 +52,11 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
-      - name: cargo clippy (default)
+      - name: cargo clippy
         run: cargo clippy
-      - name: add wasm32 target for tcp-core
-        run: rustup target add wasm32-unknown-unknown
-      - name: cargo clippy (wasm)
-        run: cargo clippy -p tcp-core --target wasm32-unknown-unknown
   doc:
-    # Run docs generation for the `tcp-core` crate on nightly rather than stable. 
-    # This enables features like https://doc.rust-lang.org/beta/unstable-book/language-features/doc-cfg.html 
+    # Run docs generation for each crate on nightly rather than stable. This 
+    # enables features like https://doc.rust-lang.org/beta/unstable-book/language-features/doc-cfg.html 
     # which allows an API be documented as only available in some specific platforms.
     runs-on: ubuntu-latest
     name: nightly / doc
@@ -75,5 +70,7 @@ jobs:
           toolchain: nightly
       - name: install cargo-docs-rs
         uses: dtolnay/install@982daea0f5d846abc3c83e01a6a1d73c040047c1 # branch=cargo-docs-rs
-      - name: cargo docs-rs -p tcp-core
+      - name: cargo docs-rs (tcp-core)
         run: cargo docs-rs -p tcp-core
+      - name: cargo docs-rs (tcp-tun)
+        run: cargo docs-rs -p tcp-tun

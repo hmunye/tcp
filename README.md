@@ -7,15 +7,13 @@ experimentation and learning.
 [![Build Status](https://github.com/hmunye/tcp/workflows/CI/badge.svg)](https://github.com/hmunye/tcp/actions?query=workflow%3ACI+branch%3Amain)
 [![Dependency Status](https://deps.rs/repo/github/hmunye/tcp/status.svg)](https://deps.rs/repo/github/hmunye/tcp)
 
-This project is organized as a Cargo workspace with three crates:
+This project is organized as a Cargo workspace with two crates:
 
 - **`tcp-core`**: A minimal, dependency-free TCP (primarily RFC 793) crate that implements the state 
 machine, packet parsing/serialization, and segment construction
 
 - **`tcp-tun`**: Linux-only crate that integrates with the network stack via TUN/TAP, using `epoll` 
 for single-threaded, non-blocking I/O
-
-- **`tcp-wasm`**: WebAssembly wrapper for `tcp-core` enabling interactive web-based TCP simulations.
 
 ## Quick Start
 
@@ -25,17 +23,16 @@ To include the `tcp-core` crate in your project as a dependency:
 cargo add --git https://github.com/hmunye/tcp.git tcp-core
 ```
 
-To build and run either `tcp-tun` or `tcp-wasm`, clone the repository:
+To build and run `tcp-tun`, clone the repository:
 
 ```bash
 git clone https://github.com/hmunye/tcp.git
 cd tcp
 ```
 
-Then, follow the individual quick start guides for either crate:
+Then, follow the dedicated quick start guide:
 
 - [`tcp-tun` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-tun#quick-start)
-- [`tcp-wasm` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-wasm#quick-start)
 
 ## License
 
