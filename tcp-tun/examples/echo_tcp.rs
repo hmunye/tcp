@@ -2,8 +2,8 @@
 //! `10.0.0.1:80`. It spawns a separate thread for each connection and echoes
 //! back any data received from the client.
 //!
-//! Before running this example, make sure to set up the TUN interface and build
-//! the binary by executing:
+//! Before running this example, ensure the TUN interface and binary are set up
+//! by running:
 //!
 //!     DEBUG=1 ./setup.sh
 //!
@@ -11,7 +11,7 @@
 //!
 //!     cargo r --example echo_tcp
 //!
-//! To test the server, you can initiate a TCP connections using netcat:
+//! To test the server, you can initiate a TCP connection using netcat:
 //!
 //!     nc -s 10.0.0.1 10.0.0.2 80
 
@@ -38,9 +38,8 @@ fn handle_client(mut stream: TcpStream) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    // Currently can only listen on the address `10.0.0.1`.
-    //
-    // Any valid port can be used.
+    // Currently only listens on IP address `10.0.0.1` unless script is
+    // configured.
     let listener = TcpListener::bind("10.0.0.1:80")?;
 
     for stream in listener.incoming() {
