@@ -1,15 +1,15 @@
 # tcp
 
-A **user-space Transmission Control Protocol (TCP) implementation in Rust**, designed for 
+A **user-space Transmission Control Protocol (TCP) implementation**, designed for 
 experimentation and learning.
 
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/hmunye/tcp/blob/main/LICENSE)
 [![Build Status](https://github.com/hmunye/tcp/workflows/CI/badge.svg)](https://github.com/hmunye/tcp/actions?query=workflow%3ACI+branch%3Amain)
 [![Dependency Status](https://deps.rs/repo/github/hmunye/tcp/status.svg)](https://deps.rs/repo/github/hmunye/tcp)
 
-This project is organized as a Cargo workspace with two crates:
+This project is organized as a Cargo workspace:
 
-- **`tcp-core`**: A minimal, dependency-free TCP (primarily RFC 793) crate that implements the state 
+- **`tcp-core`**: A lightweight TCP crate (primarily RFC 793) that handles the state 
 machine, packet parsing/serialization, and segment construction
 
 - **`tcp-tun`**: Linux-only crate that integrates with the network stack via TUN/TAP, using `epoll` 
@@ -17,22 +17,22 @@ for single-threaded, non-blocking I/O
 
 ## Quick Start
 
-To include the `tcp-core` crate in your project as a dependency:
+To include the `tcp-core` crate as a dependency in your project, run the following command:
 
 ```bash
 cargo add --git https://github.com/hmunye/tcp.git tcp-core
 ```
 
-To build and run `tcp-tun`, clone the repository:
+To get started with `tcp-tun`, clone the repository and navigate to the directory:
 
 ```bash
 git clone https://github.com/hmunye/tcp.git
-cd tcp
+cd tcp/tcp-tun
 ```
 
-Then, follow the dedicated quick start guide:
+Refer to the [quick start] guide for further steps.
 
-- [`tcp-tun` Quick Start](https://github.com/hmunye/tcp/tree/main/tcp-tun#quick-start)
+[quick start]: https://github.com/hmunye/tcp/tree/main/tcp-tun#quick-start
 
 ## License
 

@@ -1,6 +1,6 @@
 # tcp-core
 
-A minimal, dependency-free implementation of the Transmission Control Protocol (TCP), primarily based 
+A lightweight implementation of the Transmission Control Protocol (TCP), primarily based 
 on [RFC 793](https://www.rfc-editor.org/rfc/rfc793).
 
 > [!WARNING]  
@@ -16,7 +16,7 @@ on [RFC 793](https://www.rfc-editor.org/rfc/rfc793).
 ## Features
 
 - Full TCP connection lifecycle: initiation (SYN), termination (FIN), and reset (RST)
-- Bidirectional connection establishment and termination
+- Bidirectional communication
 - TIME-WAIT state handling
 - Retransmission tracking logic with exponential backoff and retry limit
 - Out-of-order segment reordering and payload reassembly
@@ -33,7 +33,7 @@ cargo t --release
 
 ## Limitations
 
-This currently omits, but is not limited to, the following features and behaviors:
+Current limitations include, but are not limited to:
 
 - Handling of buffered application data (currently buffered, not drained)
 - No zero-window probing
@@ -43,8 +43,7 @@ This currently omits, but is not limited to, the following features and behavior
 - No window scaling
 - TCP Fast Open is not implemented
 - No delayed acknowledgments
-- IPv4 options are not supported
-- Only MSS is supported in TCP options (others are ignored; parser is stubbed)
+- IPv4 options are not supported (only MSS, others are ignored)
 
 ## License
 

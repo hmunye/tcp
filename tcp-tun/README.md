@@ -1,10 +1,12 @@
 # tcp-tun
 
-Linux-only crate enabling TUN/TAP networking for user-space TCP via [tcp-core], exposing a 
-[std::net]-like API for TCP communication.
+Linux-only crate enabling TUN/TAP networking for user-space TCP, exposing a 
+[std::net]-like API.
 
-[tcp-core]: https://github.com/hmunye/tcp/tree/main/tcp-core
 [std::net]: https://doc.rust-lang.org/std/net/index.html
+
+> [!WARNING]  
+> This project is experimental and not intended for production use.
 
 ## TOC
 * [Limitations](#limitations)
@@ -14,16 +16,16 @@ Linux-only crate enabling TUN/TAP networking for user-space TCP via [tcp-core], 
 
 ## Limitations
 
-This currently omits, but is not limited to, the following features and behaviors:
+Current limitations include, but are not limited to:
 
-- Assumes IP packets are fully reassembled (no handling of IP fragmentation)
+- Assuming IP packets are fully reassembled (no handling of IP fragmentation)
 - No user-timeout support
-- No asynchronous operations (methods on TCP streams are blocking)
-- No proper demultiplexing (without an intermediary, multiple connections read directly from the TUN, 
-  causing packet to be misrouted or dropped)
+- No asynchronous operations (blocking-only API)
+- No proper demultiplexing (multiple connections read directly from the TUN, 
+  causing packets to be misrouted or dropped)
 - No connection-idle timeout (e.g., peer sends a `FIN+ACK` segment, local side of the connection 
   transitions to `CLOSE_WAIT`, and connection remains idle)
-- Incomplete pending `send`/`recv` request handling
+- Incomplete pending `send`/`recv` user request handling
 - Pending operations are not guaranteed to return when expected (may linger for longer)
 
 ## Quick Start
@@ -33,54 +35,54 @@ This crate is Linux-only due to dependencies on:
 - **`epoll`** for efficient single-threaded, non-blocking I/O
 - **`/dev/net/tun`** for handling raw IP network traffic
 
-To build the program and set up the TUN device, run:
+To setup the program, run the following command:
 
 ```bash
 ./setup.sh
 ```
-> Root privileges are required.
+> Note: `root` privileges are required.
 
-The script will:
-
-- Compile the crate in release mode by default
-- Set `CAP_NET_ADMIN` privileges for the binary
-- Create a TUN device (`tun0`) and bring it up
-- Assign the local IP `10.0.0.1/32` to the TUN device and configure a peer IP of `10.0.0.2`
-
-To build the program with logging enabled for TCP events, run the script with the `DEBUG=1` 
-environment variable set:
+Alternatively, run the command below to setup with logging enabled:
 
 ```bash
 DEBUG=1 ./setup.sh
 ```
+> Note: `root` privileges are required.
 
-To run the prepared binary, use one of the following commands:
+The script will:
 
-Built in release mode (default):
+- Compile the crate in release/debug mode
+- Set `CAP_NET_ADMIN` privileges for the binary
+- Create a TUN device (`tun0`)
+- Assign the local IP `10.0.0.1/32` to the TUN device and configure a peer IP `10.0.0.2`
+
+Choose one of the following commands based on the script mode:
+
+- Release mode (default):
 
 ```bash
-cargo r --release
+../target/release/tcp-tun
 ```
 
-Built in debug mode with logging enabled:
+- Debug mode:
 
 ```bash
-cargo r
+../target/debug/tcp-tun
 ```
 
-You can now use `10.0.0.1` as the source IP address and `10.0.0.2` as the destination to initiate or 
-accept TCP connections.
+You can now use `10.0.0.1` as the source IP address and `10.0.0.2` as the destination 
+to initiate or accept TCP connections.
 
 Examples can be found [here](https://github.com/hmunye/tcp/tree/main/tcp-tun/examples).
 
-To delete the TUN device after use, run the cleanup script:
+When finished, run the provided cleanup script:
 
 ```bash
 ./cleanup.sh
 ```
-> Root privileges are required.
+> Note: `root` privileges are required.
 
-This will remove the `tun0` interface and its associated configuration.
+This will remove the `tun0` interface and its configuration.
 
 ## License
 
