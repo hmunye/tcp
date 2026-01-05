@@ -28,6 +28,11 @@ fn handle_client(mut stream: TcpStream) -> io::Result<()> {
             break;
         }
 
+        let str = unsafe { std::str::from_utf8_unchecked(&buf[..nbytes]) };
+        if str == "exit\n" {
+            break;
+        }
+
         let written = stream.write(&buf[..nbytes])?;
         if written == 0 {
             break;
