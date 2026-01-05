@@ -1,5 +1,5 @@
-//! A minimal, third-party-free implementation of the Transmission Control Protocol
-//! (TCP), based on [RFC 793].
+//! A lightweight implementation of the Transmission Control Protocol (TCP),
+//! primarily based on [RFC 793].
 //!
 //! This project is experimental and not intended for production use.
 //!

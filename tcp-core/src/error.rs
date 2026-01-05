@@ -1,19 +1,20 @@
-//! Error types for IPv4/TCP header and segment handling.
+//! Error types for TCP over IPv4, including errors related to both IPv4 headers
+//! and TCP segments.
 
 use std::{error, fmt, io, result};
 
 /// A convenience wrapper around `Result` for `tcp_core::Error`.
 pub type Result<T> = result::Result<T, Error>;
 
-/// Set of errors that can occur in IPv4/TCP header and segment handling.
+/// Set of errors that can occur in TCP segment handling.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Error while reading or writing an IPv4/TCP header or segment.
+    /// Error while reading or writing a TCP segment.
     Io(io::Error),
     /// Error parsing a TCP segment.
     Parse(ParseError),
-    /// Error creating or manipulating an IPv4/TCP header.
+    /// Error creating or manipulating an IPv4 or TCP header.
     Header(HeaderError),
 }
 
@@ -47,12 +48,12 @@ impl fmt::Display for Error {
     }
 }
 
-/// An error that occurred while trying to parse a TCP segment.
+/// Error occurred while trying to parse a TCP over IPv4 segment.
 #[derive(Debug)]
 #[non_exhaustive]
-#[allow(missing_docs)] // Fields are self-descriptive.
+#[allow(missing_docs)]
 pub enum ParseError {
-    /// Input buffer not within the range for an IPv4/TCP header.
+    /// Input buffer not within the valid range for an IPv4/TCP header.
     InvalidBufferLength { provided: usize, min: u16, max: u16 },
     /// Invalid IPv4 version.
     InvalidVersion { provided: u8, expected: u8 },
@@ -86,11 +87,14 @@ impl fmt::Display for ParseError {
             ParseError::InvalidBufferLength { provided, min, max } => {
                 write!(
                     f,
-                    "invalid buffer length: {provided} bytes (not within the valid range: {min}..={max} bytes)"
+                    "invalid header length: {provided} bytes (not within the valid range: {min}..={max} bytes)"
                 )
             }
             ParseError::InvalidVersion { provided, expected } => {
-                write!(f, "invalid IP version: {provided} (must be {expected})")
+                write!(
+                    f,
+                    "invalid IP version: IPv{provided} (must be IPv{expected})"
+                )
             }
             ParseError::InvalidIhl { provided, expected } => {
                 write!(
@@ -138,10 +142,10 @@ impl fmt::Display for ParseError {
     }
 }
 
-/// An error occurred while trying to create or manipulate an IPv4/TCP header.
+/// Error occurred while trying to create or manipulate an IPv4 or TCP header.
 #[derive(Debug)]
 #[non_exhaustive]
-#[allow(missing_docs)] // Fields are self-descriptive.
+#[allow(missing_docs)]
 pub enum HeaderError {
     /// Invalid payload length for an IPv4 header.
     PayloadTooLarge { provided: u16, max: u16 },
@@ -173,11 +177,11 @@ impl fmt::Display for HeaderError {
             } => {
                 write!(
                     f,
-                    "failed to append TCP option to header: attempted to append {attempted_len} bytes (available space: {current_len} bytes, exceeds maximum allowed {max_len} bytes)"
+                    "failed to append TCP option to header: appending would result in {attempted_len} bytes, but current length is {current_len} (exceeds maximum allowed {max_len} bytes)"
                 )
             }
             HeaderError::InvalidMssOption => {
-                write!(f, "invalid TCP MSS option value: must be greater than 0")
+                write!(f, "invalid TCP MSS option: value must be greater than 0")
             }
         }
     }

@@ -629,13 +629,13 @@ impl TcpOptions {
                 return Err(Error::Header(HeaderError::InvalidMssOption));
             }
 
-            let opts_len = self.len();
+            let current_len = self.len();
 
             // The MSS option would overflow the options buffer.
-            if opts_len + Self::MSS_LEN > Self::MAX_OPTIONS_LEN {
+            if current_len + Self::MSS_LEN > Self::MAX_OPTIONS_LEN {
                 return Err(Error::Header(HeaderError::InsufficientOptionSpace {
-                    attempted_len: (opts_len + Self::MSS_LEN),
-                    current_len: opts_len,
+                    attempted_len: (current_len + Self::MSS_LEN),
+                    current_len,
                     max_len: Self::MAX_OPTIONS_LEN,
                 }));
             }
@@ -646,7 +646,7 @@ impl TcpOptions {
             mss_option[1] = 0x04;
             mss_option[2..4].copy_from_slice(&mss.to_be_bytes());
 
-            self.buf[opts_len..opts_len + Self::MSS_LEN].copy_from_slice(&mss_option);
+            self.buf[current_len..current_len + Self::MSS_LEN].copy_from_slice(&mss_option);
             self.len += Self::MSS_LEN;
         }
 
