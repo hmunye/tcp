@@ -1105,10 +1105,12 @@ impl TCB {
                 }
             }
 
-            if let ConnectionState::ESTABLISHED
-            | ConnectionState::FIN_WAIT_1
-            | ConnectionState::FIN_WAIT_2 = self.state
-                && seg_len > 0
+            if matches!(
+                self.state,
+                ConnectionState::ESTABLISHED
+                    | ConnectionState::FIN_WAIT_1
+                    | ConnectionState::FIN_WAIT_2
+            ) && seg_len > 0
             {
                 // If the RCV.WND is zero, no segments will be acceptable, but
                 // special allowance should be made to accept valid ACKs, URGs

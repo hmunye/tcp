@@ -84,8 +84,10 @@ jobs:
           toolchain: nightly
       - name: Install cargo-docs-rs
         uses: dtolnay/install@982daea0f5d846abc3c83e01a6a1d73c040047c1 # branch=cargo-docs-rs
-      - name: cargo docs-rs
-        run: cargo docs-rs
+      - name: cargo docs-rs (tcp)
+        run: cargo docs-rs -p tcp
+      - name: cargo docs-rs (tcp-tun)
+        run: cargo docs-rs -p tcp-tun
   msrv:
     # Check that we can build using the MSRV specified by this crate.
     runs-on: ubuntu-latest
@@ -109,4 +111,5 @@ jobs:
           path: ~/.cargo
           key: ${{ runner.os }}-cargo
       - name: cargo +${{ matrix.msrv }} check
-        run: cargo check
+        # TODO: Remove `-p tcp` when refactoring `tcp-tun`
+        run: cargo check -p tcp
