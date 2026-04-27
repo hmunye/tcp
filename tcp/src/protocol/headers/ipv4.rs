@@ -548,8 +548,11 @@ impl TryFrom<u8> for Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(miri))]
     use proptest::prelude::*;
 
+    #[cfg(not(miri))]
     proptest! {
         #[test]
         fn ipv4_header_parsing_no_panic(header_bytes in prop::collection::vec(any::<u8>(), 0..Ipv4Header::MAX_HEADER_LEN as usize)) {

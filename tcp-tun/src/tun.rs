@@ -5,7 +5,7 @@
 //! program and instead of sending packets via physical media writes them to the
 //! user space program.
 
-use tcp_core::Result;
+use tcp::Result;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};

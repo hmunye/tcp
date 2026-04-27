@@ -1,10 +1,10 @@
 //! Event loop to monitor for raw packet I/O, manage timers for connection
 //! termination and retransmission, and handle user requests synchronously.
 
-use tcp_core::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
-use tcp_core::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
-use tcp_core::protocol::{Socket, SocketAddr};
-use tcp_core::{Error, Result, debug, error, warn};
+use tcp::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
+use tcp::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
+use tcp::protocol::{Socket, SocketAddr};
+use tcp::{Error, Result, debug, error, warn};
 
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::os::unix::io::{AsRawFd, RawFd};

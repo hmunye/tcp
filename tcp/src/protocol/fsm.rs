@@ -1639,7 +1639,7 @@ fn is_between_wrapped(start: u32, x: u32, end: u32) -> bool {
     wrapping_lt(start, x) && wrapping_lt(x, end)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

@@ -1,12 +1,18 @@
-# This workflow runs whenever a PR is opened or updated, or a commit is pushed 
+# https://github.com/jonhoo/rust-ci-conf/blob/main/.github/workflows/check.yml
+#
+# This workflow runs whenever a PR is opened or updated, or a commit is pushed
 # to main. It runs several checks:
 #
-# - fmt: checks that the code is formatted according to rustfmt
-# - clippy: checks that the code does not contain any clippy warnings
-# - doc: checks that the code can be documented without errors
+# - fmt:    checks that the code is formatted according to rustfmt
+# - clippy: checks that the code has no clippy warnings
+# - doc:    checks that the documentation builds without any errors
+# - msrv:   checks that the MSRV specified in the crate is correct
 permissions:
   contents: read
 
+# This configuration enables maintainers of this repository to create a branch
+# and PR based on the new branch. Restricting the push trigger to the main
+# branch ensures the PR only gets built once.
 on:
   push:
     branches: [main]
@@ -14,6 +20,8 @@ on:
 
 # If new code is pushed to a PR branch, then cancel in progress workflows for 
 # that PR. Ensures that we don't waste CI time, and return results quicker.
+#
+# https://github.com/jonhoo/rust-ci-conf/pull/5
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -24,11 +32,11 @@ jobs:
     runs-on: ubuntu-latest
     name: stable / fmt
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # tag=v4.2.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # tag=v6.0.2
         with:
           submodules: true
-      - name: install stable
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
         with:
           toolchain: stable
           components: rustfmt
@@ -37,6 +45,9 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     name: ${{ matrix.toolchain }} / clippy
+    permissions:
+      contents: read
+      checks: write
     strategy:
       fail-fast: false
       matrix:
@@ -44,33 +55,58 @@ jobs:
         # channels.
         toolchain: [stable, beta]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # tag=v4.2.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # tag=v6.0.2
         with:
           submodules: true
-      - name: install ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+      - name: Install ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
       - name: cargo clippy
-        run: cargo clippy
+        run: cargo clippy --all-targets
   doc:
-    # Run docs generation for each crate on nightly rather than stable. This 
-    # enables features like https://doc.rust-lang.org/beta/unstable-book/language-features/doc-cfg.html 
-    # which allows an API be documented as only available in some specific platforms.
+    # Run docs generation on nightly rather than stable. This enables features 
+    # like:
+    #
+    # https://doc.rust-lang.org/beta/unstable-book/language-features/doc-cfg.html
+    #
+    # This allows an API be documented as only available on specific platforms.
     runs-on: ubuntu-latest
     name: nightly / doc
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # tag=v4.2.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # tag=v6.0.2
         with:
           submodules: true
-      - name: install nightly
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # branch=master
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
         with:
           toolchain: nightly
-      - name: install cargo-docs-rs
+      - name: Install cargo-docs-rs
         uses: dtolnay/install@982daea0f5d846abc3c83e01a6a1d73c040047c1 # branch=cargo-docs-rs
-      - name: cargo docs-rs (tcp-core)
-        run: cargo docs-rs -p tcp-core
-      - name: cargo docs-rs (tcp-tun)
-        run: cargo docs-rs -p tcp-tun
+      - name: cargo docs-rs
+        run: cargo docs-rs
+  msrv:
+    # Check that we can build using the MSRV specified by this crate.
+    runs-on: ubuntu-latest
+    # We use a matrix here because env can't be used in job names.
+    #
+    # https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability
+    strategy:
+      matrix:
+        msrv: ["1.85.0"] # 2024 edition
+    name: ubuntu / ${{ matrix.msrv }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # tag=v6.0.2
+        with:
+          submodules: true
+      - name: Install ${{ matrix.msrv }}
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
+        with:
+          toolchain: ${{ matrix.msrv }}
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # tag=v5.0.4
+        with:
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo
+      - name: cargo +${{ matrix.msrv }} check
+        run: cargo check

@@ -2,8 +2,8 @@
 //!
 //! [std::net]: https://doc.rust-lang.org/std/net/index.html
 
-use tcp_core::Error;
-use tcp_core::protocol::{Socket, SocketAddr};
+use tcp::Error;
+use tcp::protocol::{Socket, SocketAddr};
 
 use std::collections::VecDeque;
 use std::convert::TryInto;

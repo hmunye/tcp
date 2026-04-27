@@ -242,7 +242,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tcp-core"
+name = "tcp"
 version = "0.1.0"
 dependencies = [
  "proptest",
@@ -253,7 +253,7 @@ name = "tcp-tun"
 version = "0.1.0"
 dependencies = [
  "libc",
- "tcp-core",
+ "tcp",
 ]
 
 [[package]]

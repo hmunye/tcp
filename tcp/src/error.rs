@@ -3,7 +3,7 @@
 
 use std::{error, fmt, io, result};
 
-/// A convenience wrapper around `Result` for `tcp_core::Error`.
+/// A convenience wrapper around `Result` for `tcp::Error`.
 pub type Result<T> = result::Result<T, Error>;
 
 /// Set of errors that can occur in TCP segment handling.
