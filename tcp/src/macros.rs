@@ -9,21 +9,12 @@ macro_rules! cfg_trace {
     }
 }
 
-cfg_trace! {
-    const ANSI_RESET: &str = "\x1b[0m";
-    const ANSI_RED_BOLD: &str = "\x1b[1;31m";
-    const ANSI_YELLOW_BOLD: &str = "\x1b[1;33m";
-    const ANSI_BLUE_BOLD: &str = "\x1b[1;34m";
-    const ANSI_GREEN_BOLD: &str = "\x1b[1;32m";
-}
-
 macro_rules! tcp_debug {
     ($($tt:tt)+) => {{
         #[cfg(feature = "trace")]
+        // blue-bold
         eprintln!(
-            "[{}DEBUG{}]: {}",
-            ANSI_BLUE_BOLD,
-            ANSI_RESET,
+            "[\x1b[1;34mDEBUG\x1b[0m]: {}",
             format!($($tt)+)
         );
     }};
@@ -32,10 +23,9 @@ macro_rules! tcp_debug {
 macro_rules! tcp_info {
     ($($tt:tt)+) => {{
         #[cfg(feature = "trace")]
+        // green-bold
         eprintln!(
-            "[{}INFO{}]:  {}",
-            ANSI_GREEN_BOLD,
-            ANSI_RESET,
+            "[\x1b[1;32mINFO\x1b[0m]:  {}",
             format!($($tt)+)
         );
     }};
@@ -44,10 +34,9 @@ macro_rules! tcp_info {
 macro_rules! tcp_warn {
     ($($tt:tt)+) => {{
         #[cfg(feature = "trace")]
+        // yellow-bold
         eprintln!(
-            "[{}WARN{}]:  {}",
-            ANSI_YELLOW_BOLD,
-            ANSI_RESET,
+            "[\x1b[1;33mWARN\x1b[0m]:  {}",
             format!($($tt)+)
         );
     }};
@@ -56,10 +45,9 @@ macro_rules! tcp_warn {
 macro_rules! tcp_error {
     ($($tt:tt)+) => {{
         #[cfg(feature = "trace")]
+        // red-bold
         eprintln!(
-            "[{}ERROR{}]: {}",
-            ANSI_RED_BOLD,
-            ANSI_RESET,
+            "[\x1b[1;31mERROR\x1b[0m]: {}",
             format!($($tt)+)
         );
     }};
