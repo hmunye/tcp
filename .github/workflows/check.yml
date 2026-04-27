@@ -6,6 +6,7 @@
 # - fmt:    checks that the code is formatted according to rustfmt
 # - clippy: checks that the code has no clippy warnings
 # - doc:    checks that the documentation builds without any errors
+# - hack:   checks combinations of feature flags
 # - msrv:   checks that the MSRV specified in the crate is correct
 permissions:
   contents: read
@@ -88,6 +89,28 @@ jobs:
         run: cargo docs-rs -p tcp
       - name: cargo docs-rs (tcp-tun)
         run: cargo docs-rs -p tcp-tun
+  hack:
+    # cargo-hack checks combinations of feature flags to ensure that features
+    # are all additive, which is required for feature unification.
+    runs-on: ubuntu-latest
+    name: ubuntu / stable / features
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # tag=v6.0.2
+        with:
+          submodules: true
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
+        with:
+          toolchain: stable
+      - name: cargo install cargo-hack
+        uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # tag=v2.71.3
+        with:
+          tool: cargo-hack
+      # No target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
+      #
+      # --feature-powerset runs for every combination of features.
+      - name: cargo hack
+        run: cargo hack --feature-powerset check
   msrv:
     # Check that we can build using the MSRV specified by this crate.
     runs-on: ubuntu-latest

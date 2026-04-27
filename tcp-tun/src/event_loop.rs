@@ -4,7 +4,7 @@
 use tcp::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
 use tcp::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
 use tcp::protocol::{Socket, SocketAddr};
-use tcp::{Error, Result, debug, error, warn};
+use tcp::{Error, Result};
 
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -104,7 +104,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                                     let (mut segments, nbytes) = conn.send(&data)?;
 
                                     while let Some(segment) = segments.pop_front() {
-                                        debug!(
+                                        eprintln!(
                                             "[{sock}] ({:?}) sending {nbytes} bytes to peer",
                                             conn.state()
                                         );
@@ -132,14 +132,14 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                                     let mut buf = vec![0u8; len];
                                     match conn.recv(&mut buf[..]) {
                                         Ok(nbytes) => {
-                                            debug!(
+                                            eprintln!(
                                                 "[{sock}] ({:?}) read {nbytes} from peer",
                                                 conn.state()
                                             );
                                             let _ = tx.send((buf, nbytes));
                                         }
                                         Err(err) => {
-                                            error!(
+                                            eprintln!(
                                                 "[{sock}] ({:?}) failed to read from socket: {err}",
                                                 conn.state()
                                             );
@@ -172,7 +172,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                             }
                         }
                         UserReq::Accept(_) => {
-                            error!(
+                            eprintln!(
                                 "[{}] ({:?}) invalid user request for TcpStream: UserReq::Accept(...)",
                                 connection.0,
                                 connection.1.state(),
@@ -198,7 +198,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                 match conn.state() {
                     ConnectionState::TIME_WAIT => {
                         if conn.time_wait().elapsed() >= Duration::from_secs(MSL * 2) {
-                            warn!("[{sock}] (TIME_WAIT) timer expired -- closing connection",);
+                            eprintln!("[{sock}] (TIME_WAIT) timer expired -- closing connection",);
                             continue 'event_loop;
                         }
                     }
@@ -210,7 +210,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                         }
 
                         if state == ConnectionState::CLOSED {
-                            warn!("[{sock}] (CLOSED) connection closed");
+                            eprintln!("[{sock}] (CLOSED) connection closed");
                             break 'event_loop;
                         } else {
                             nearest_timer = timer;
@@ -257,7 +257,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                 let nbytes = match nic.recv(&mut buf[..]) {
                     Ok(bytes) => bytes,
                     Err(err) => {
-                        error!("failed to read from TUN interface: {err}");
+                        eprintln!("failed to read from TUN interface: {err}");
                         break;
                     }
                 };
@@ -265,7 +265,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                 match Ipv4Header::try_from(&buf[..nbytes]) {
                     Ok(iph) if iph.protocol() == Protocol::TCP => {
                         if !iph.is_valid_checksum() {
-                            warn!("invalid IP packet received: invalid IPv4 header checksum");
+                            eprintln!("invalid IP packet received: invalid IPv4 header checksum");
                             break;
                         }
 
@@ -279,7 +279,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                                 let payload = &buf[iph.header_len() + tcph.header_len()..nbytes];
 
                                 if !tcph.is_valid_checksum(&iph, payload) {
-                                    warn!("invalid IP packet received: invalid TCP checksum");
+                                    eprintln!("invalid IP packet received: invalid TCP checksum");
                                     break;
                                 }
 
@@ -317,7 +317,7 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                                                         conn.send(&data)?;
 
                                                     while let Some(segment) = segments.pop_front() {
-                                                        debug!(
+                                                        eprintln!(
                                                             "[{sock}] ({:?}) sending {nbytes} bytes to peer",
                                                             conn.state()
                                                         );
@@ -348,14 +348,14 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                                                     let mut buf = vec![0u8; len];
                                                     match conn.recv(&mut buf[..]) {
                                                         Ok(nbytes) => {
-                                                            debug!(
+                                                            eprintln!(
                                                                 "[{sock}] ({:?}) read {nbytes} from peer",
                                                                 conn.state()
                                                             );
                                                             let _ = tx.send((buf, nbytes));
                                                         }
                                                         Err(err) => {
-                                                            error!(
+                                                            eprintln!(
                                                                 "[{sock}] ({:?}) failed to read from socket: {err}",
                                                                 conn.state()
                                                             );
@@ -384,41 +384,41 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                                                     let _ = tx.send(0);
                                                 }
 
-                                                debug!("[{sock}] connection closed");
+                                                eprintln!("[{sock}] connection closed");
                                                 break 'event_loop;
                                             }
                                         }
                                         Err(Error::Io(err)) => match err.kind() {
                                             io::ErrorKind::ConnectionReset
                                             | io::ErrorKind::ConnectionRefused => {
-                                                debug!("[{sock}] connection closed");
+                                                eprintln!("[{sock}] connection closed");
                                                 break 'event_loop;
                                             }
                                             err => {
-                                                warn!("{err}");
+                                                eprintln!("{err}");
                                             }
                                         },
                                         Err(err) => {
-                                            error!("unexpected error occurred: {err}");
+                                            eprintln!("unexpected error occurred: {err}");
                                         }
                                     }
                                 } else {
-                                    warn!(
+                                    eprintln!(
                                         "ignoring TCP segment with mismatched socket address: {incoming_sock}"
                                     );
                                     continue;
                                 }
                             }
                             Err(err) => {
-                                error!("invalid TCP segment received: {err}");
+                                eprintln!("invalid TCP segment received: {err}");
                             }
                         }
                     }
                     Ok(p) => {
-                        warn!("ignoring non-TCP ({:?}) packet", p.protocol());
+                        eprintln!("ignoring non-TCP ({:?}) packet", p.protocol());
                     }
                     Err(err) => {
-                        error!("invalid IP packet received: {err}");
+                        eprintln!("invalid IP packet received: {err}");
                     }
                 }
             }
@@ -494,7 +494,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                     let (mut segments, nbytes) = conn.send(&data)?;
 
                                     while let Some(segment) = segments.pop_front() {
-                                        debug!(
+                                        eprintln!(
                                             "[{sock}] ({:?}) sending {nbytes} bytes to peer",
                                             conn.state()
                                         );
@@ -520,14 +520,14 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                     let mut buf = vec![0u8; len];
                                     match conn.recv(&mut buf[..]) {
                                         Ok(nbytes) => {
-                                            debug!(
+                                            eprintln!(
                                                 "[{sock}] ({:?}) read {nbytes} from peer",
                                                 conn.state()
                                             );
                                             let _ = tx.send((buf, nbytes));
                                         }
                                         Err(err) => {
-                                            error!(
+                                            eprintln!(
                                                 "[{sock}] ({:?}) failed to read from socket: {err}",
                                                 conn.state()
                                             );
@@ -590,7 +590,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                 connections.retain(|socket, conn| match conn.state() {
                     ConnectionState::TIME_WAIT => {
                         if conn.time_wait().elapsed() >= Duration::from_secs(MSL * 2) {
-                            warn!(
+                            eprintln!(
                                 "[{}] (TIME_WAIT) timer expired -- removing connection",
                                 socket
                             );
@@ -605,14 +605,14 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                         while let Some(seg) = segments.pop_front() {
                             if let Ok(bytes) = seg.to_be_bytes() {
                                 nic.send(&bytes[..]).unwrap_or_else(|err| {
-                                    error!("[{socket}] ({state:?}) {err}");
+                                    eprintln!("[{socket}] ({state:?}) {err}");
                                     0
                                 });
                             }
                         }
 
                         if state == ConnectionState::CLOSED {
-                            warn!("[{}] (CLOSED) removing connection", socket);
+                            eprintln!("[{}] (CLOSED) removing connection", socket);
                             false
                         } else {
                             if timer < nearest_timer {
@@ -662,7 +662,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                 let nbytes = match nic.recv(&mut buf[..]) {
                     Ok(bytes) => bytes,
                     Err(err) => {
-                        error!("failed to read from TUN interface: {err}");
+                        eprintln!("failed to read from TUN interface: {err}");
                         break;
                     }
                 };
@@ -670,7 +670,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                 match Ipv4Header::try_from(&buf[..nbytes]) {
                     Ok(iph) if iph.protocol() == Protocol::TCP => {
                         if !iph.is_valid_checksum() {
-                            warn!("invalid IP packet received: invalid IPv4 header checksum");
+                            eprintln!("invalid IP packet received: invalid IPv4 header checksum");
                             break;
                         }
 
@@ -684,7 +684,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                 let payload = &buf[iph.header_len() + tcph.header_len()..nbytes];
 
                                 if !tcph.is_valid_checksum(&iph, payload) {
-                                    warn!("invalid IP packet received: invalid TCP checksum");
+                                    eprintln!("invalid IP packet received: invalid TCP checksum");
                                     break;
                                 }
 
@@ -716,7 +716,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                                     _ => {}
                                                 },
                                                 Err(err) => {
-                                                    error!(
+                                                    eprintln!(
                                                         "failed to process incoming TCP segment: {err}"
                                                     );
                                                 }
@@ -749,7 +749,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                                             while let Some(segment) =
                                                                 segments.pop_front()
                                                             {
-                                                                debug!(
+                                                                eprintln!(
                                                                     "[{incoming_sock}] ({:?}) sending {nbytes} bytes to peer",
                                                                     conn_state
                                                                 );
@@ -785,14 +785,14 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                                             match conn.get_mut().recv(&mut buf[..])
                                                             {
                                                                 Ok(nbytes) => {
-                                                                    debug!(
+                                                                    eprintln!(
                                                                         "[{incoming_sock}] ({:?}) read {nbytes} from peer",
                                                                         conn_state
                                                                     );
                                                                     let _ = tx.send((buf, nbytes));
                                                                 }
                                                                 Err(err) => {
-                                                                    error!(
+                                                                    eprintln!(
                                                                         "[{incoming_sock}] ({:?}) failed to read from socket: {err}",
                                                                         conn_state
                                                                     );
@@ -858,7 +858,7 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
 
                                                         connections.remove(&incoming_sock);
 
-                                                        debug!(
+                                                        eprintln!(
                                                             "[{incoming_sock}] removed connection, active connections remaining: {}",
                                                             connections.len(),
                                                         );
@@ -869,23 +869,23 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                                     | io::ErrorKind::ConnectionRefused => {
                                                         connections.remove(&incoming_sock);
 
-                                                        debug!(
+                                                        eprintln!(
                                                             "[{incoming_sock}] removed connection, active connections remaining: {}",
                                                             connections.len(),
                                                         );
                                                     }
                                                     err => {
-                                                        warn!("{err}");
+                                                        eprintln!("{err}");
                                                     }
                                                 },
                                                 Err(err) => {
-                                                    error!("unexpected error occurred: {err}");
+                                                    eprintln!("unexpected error occurred: {err}");
                                                 }
                                             }
                                         }
                                     }
                                 } else {
-                                    warn!(
+                                    eprintln!(
                                         "[{incoming_sock}] ignoring TCP segment with incorrect destination port {dst_port}, listening on port: {}",
                                         listen_addr.port
                                     );
@@ -893,15 +893,15 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                                 }
                             }
                             Err(err) => {
-                                error!("invalid TCP segment received: {err}");
+                                eprintln!("invalid TCP segment received: {err}");
                             }
                         }
                     }
                     Ok(p) => {
-                        warn!("ignoring non-TCP ({:?}) packet", p.protocol());
+                        eprintln!("ignoring non-TCP ({:?}) packet", p.protocol());
                     }
                     Err(err) => {
-                        error!("invalid IP packet received: {err}");
+                        eprintln!("invalid IP packet received: {err}");
                     }
                 }
             }

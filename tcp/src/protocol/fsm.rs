@@ -9,7 +9,7 @@ use std::{io, mem};
 
 use crate::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
 use crate::protocol::{Socket, SocketAddr, TcpSegment};
-use crate::{Error, Result, debug, warn};
+use crate::{Error, Result};
 
 /// Initial Retransmission Timeout (`RTO`) in seconds.
 pub const RTO: u64 = 1;
@@ -258,7 +258,7 @@ impl TCB {
         // <SEQ=ISS><CTL=SYN>
         let syn = conn.create_syn()?;
 
-        debug!(
+        tcp_debug!(
             "[{}] (CLOSED) constructed SYN: CLOSED/ACTIVE_OPEN -> SYN_SENT",
             conn.sock
         );
@@ -288,7 +288,7 @@ impl TCB {
 
         // An incoming RST should be ignored.
         if tcph.rst() {
-            debug!("(LISTEN) received RST: ignoring");
+            tcp_debug!("(LISTEN) received RST: ignoring");
             return Ok((None, None));
         }
 
@@ -311,13 +311,13 @@ impl TCB {
             ip.set_header_checksum();
             rst.set_checksum(&ip, &[]);
 
-            debug!("(LISTEN) received ACK: constructed RST");
+            tcp_debug!("(LISTEN) received ACK: constructed RST");
 
             return Ok((None, Some(TcpSegment::new(ip, rst, &[]))));
         }
 
         if !tcph.syn() {
-            debug!("(LISTEN) did not receive SYN: ignoring");
+            tcp_debug!("(LISTEN) did not receive SYN: ignoring");
             return Ok((None, None));
         }
 
@@ -379,7 +379,7 @@ impl TCB {
         // <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
         let syn_ack = conn.create_syn_ack()?;
 
-        debug!(
+        tcp_debug!(
             "[{}] (LISTEN) received SYN, constructed SYN+ACK: LISTEN/PASSIVE_OPEN -> SYN_RECEIVED",
             conn.sock
         );
@@ -409,9 +409,10 @@ impl TCB {
         }
 
         if self.snd.wnd == 0 {
-            debug!(
+            tcp_debug!(
                 "[{}] ({:?}) buffering unsent data due to send window size: 0",
-                self.sock, self.state
+                self.sock,
+                self.state
             );
 
             self.snd_buf.push_back(buf[..].to_vec());
@@ -435,9 +436,11 @@ impl TCB {
                 self.snd.wnd -= chunk_len as u16;
                 self.snd.nxt = self.snd.nxt.wrapping_add(chunk_len as u32);
             } else {
-                debug!(
+                tcp_debug!(
                     "[{}] ({:?}) buffering remaining unsent data due to send window size: {}",
-                    self.sock, self.state, self.snd.wnd
+                    self.sock,
+                    self.state,
+                    self.snd.wnd
                 );
 
                 // Segment the rest of the buffer up to the peer's window size.
@@ -505,7 +508,7 @@ impl TCB {
     pub fn close(&mut self) -> Result<Option<TcpSegment>> {
         match self.state {
             ConnectionState::SYN_SENT => {
-                warn!(
+                tcp_warn!(
                     "[{}] (SYN_SENT) close call received, closing connection: SYN_SENT -> CLOSED",
                     self.sock,
                 );
@@ -520,7 +523,7 @@ impl TCB {
             ConnectionState::SYN_RECEIVED | ConnectionState::ESTABLISHED => {
                 let fin_ack = self.create_fin_ack(&[])?;
 
-                debug!(
+                tcp_debug!(
                     "[{}] ({state:?}) close call received, constructed FIN+ACK: {state:?} -> FIN_WAIT_1",
                     self.sock,
                     state = self.state
@@ -534,7 +537,7 @@ impl TCB {
             ConnectionState::CLOSE_WAIT => {
                 let fin_ack = self.create_fin_ack(&[])?;
 
-                debug!(
+                tcp_debug!(
                     "[{}] (CLOSE_WAIT) close call received, constructed FIN+ACK: CLOSE_WAIT -> LAST_ACK",
                     self.sock
                 );
@@ -549,9 +552,10 @@ impl TCB {
             | ConnectionState::CLOSING
             | ConnectionState::LAST_ACK
             | ConnectionState::TIME_WAIT => {
-                debug!(
+                tcp_debug!(
                     "[{}] ({:?}) close call received: ignoring",
-                    self.sock, self.state
+                    self.sock,
+                    self.state
                 );
 
                 Ok(None)
@@ -574,7 +578,7 @@ impl TCB {
             | ConnectionState::CLOSING
             | ConnectionState::LAST_ACK
             | ConnectionState::TIME_WAIT => {
-                debug!(
+                tcp_debug!(
                     "[{}] ({state:?}) abort call received, connection reset: {state:?} -> CLOSED",
                     self.sock,
                     state = self.state
@@ -594,7 +598,7 @@ impl TCB {
             | ConnectionState::CLOSE_WAIT => {
                 let rst = self.create_rst(self.snd.nxt, 0)?;
 
-                debug!(
+                tcp_debug!(
                     "[{}] ({state:?}) abort call received, constructed RST+ACK: {state:?} -> CLOSED",
                     self.sock,
                     state = self.state
@@ -695,13 +699,13 @@ impl TCB {
         if let ConnectionState::SYN_SENT = self.state {
             // Do not process an incoming FIN since SEG.SEQ cannot be validated.
             if tcph.fin() {
-                debug!("[{}] (SYN_SENT) received FIN: ignoring", self.sock);
+                tcp_debug!("[{}] (SYN_SENT) received FIN: ignoring", self.sock);
                 return Ok(None);
             }
 
             // Should not be receiving data in SYN_SENT.
             if tcph.psh() {
-                debug!("[{}] (SYN_SENT) received PSH: ignoring", self.sock);
+                tcp_debug!("[{}] (SYN_SENT) received PSH: ignoring", self.sock);
                 return Ok(None);
             }
 
@@ -709,9 +713,10 @@ impl TCB {
                 // Peer did not correctly ACK our SYN.
                 if ackn <= self.snd.iss || ackn > self.snd.nxt {
                     if tcph.rst() {
-                        debug!(
+                        tcp_debug!(
                             "[{}] (SYN_SENT) invalid ACK number {} with RST: ignoring",
-                            self.sock, ackn,
+                            self.sock,
+                            ackn,
                         );
 
                         return Err(Error::Io(io::Error::other("invalid segment received")));
@@ -720,7 +725,7 @@ impl TCB {
                     // <SEQ=SEG.ACK><CTL=RST>
                     let rst = self.create_rst(ackn, 0)?;
 
-                    warn!(
+                    tcp_warn!(
                         "[{}] (SYN_SENT) received invalid ACK, constructed RST: SYN_SENT -> CLOSED",
                         self.sock
                     );
@@ -738,16 +743,17 @@ impl TCB {
                     ackn,
                     self.snd.nxt.wrapping_add(1),
                 ) {
-                    debug!(
+                    tcp_debug!(
                         "[{}] (SYN_SENT) unacceptable ACK number {}: ignoring",
-                        self.sock, ackn,
+                        self.sock,
+                        ackn,
                     );
 
                     return Err(Error::Io(io::Error::other("invalid segment received")));
                 }
 
                 if tcph.rst() {
-                    warn!(
+                    tcp_warn!(
                         "[{}] (SYN_SENT) received valid RST, connection reset: SYN_SENT -> CLOSED",
                         self.sock
                     );
@@ -784,7 +790,7 @@ impl TCB {
                     // <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
                     let ack = self.create_ack(&[])?;
 
-                    debug!(
+                    tcp_debug!(
                         "[{}] (SYN_SENT) received SYN+ACK, constructed ACK: SYN_SENT -> ESTABLISHED",
                         self.sock
                     );
@@ -811,7 +817,7 @@ impl TCB {
                     // <SEQ=ISS><ACK=RCV.NXT><CTL=SYN,ACK>
                     let syn_ack = self.create_syn_ack()?;
 
-                    debug!(
+                    tcp_debug!(
                         "[{}] (SYN_SENT) received SYN, constructed SYN+ACK: SYN_SENT -> SYN_RECEIVED",
                         self.sock
                     );
@@ -835,14 +841,14 @@ impl TCB {
                     // Received an ACK for out SYN.
                     self.snd.una = ackn;
 
-                    debug!(
+                    tcp_debug!(
                         "[{}] (SYN_SENT) received valid ACK: waiting for SYN",
                         self.sock
                     );
                 }
                 (false, false) => {
                     // Case 4: Neither SYN or ACK received (return).
-                    debug!(
+                    tcp_debug!(
                         "[{}] (SYN_SENT) received neither SYN or ACK: ignoring",
                         self.sock
                     );
@@ -920,16 +926,18 @@ impl TCB {
                 None
             };
 
-            debug!(
+            tcp_debug!(
                 "[{}] ({:?}) received invalid SEQ number {}: constructed ACK",
-                self.sock, self.state, seqn
+                self.sock,
+                self.state,
+                seqn
             );
 
             return Ok(maybe_ack);
         }
 
         if tcph.rst() {
-            warn!(
+            tcp_warn!(
                 "[{}] ({state:?}) received valid RST, connection reset: {state:?} -> CLOSED",
                 self.sock,
                 state = self.state,
@@ -968,7 +976,7 @@ impl TCB {
                 self.create_rst(0, seqn.wrapping_add(seg_len))?
             };
 
-            warn!(
+            tcp_warn!(
                 "[{}] ({state:?}) received SYN, constructed RST: {state:?} -> CLOSED",
                 self.sock,
                 state = self.state,
@@ -980,9 +988,10 @@ impl TCB {
         }
 
         if !tcph.ack() {
-            debug!(
+            tcp_debug!(
                 "[{}] ({:?}) did not receive ACK: ignoring",
-                self.sock, self.state,
+                self.sock,
+                self.state,
             );
             return Ok(None);
         } else {
@@ -1001,9 +1010,10 @@ impl TCB {
                     // <SEQ=SEG.ACK><CTL=RST>
                     let rst = self.create_rst(ackn, 0)?;
 
-                    warn!(
+                    tcp_warn!(
                         "[{}] (SYN_RECEIVED) received unacceptable ACK number {}, constructed RST: SYN_RECEIVED -> CLOSED",
-                        self.sock, ackn,
+                        self.sock,
+                        ackn,
                     );
 
                     self.state = ConnectionState::CLOSED;
@@ -1011,7 +1021,7 @@ impl TCB {
                     return Ok(Some(rst));
                 }
 
-                debug!(
+                tcp_debug!(
                     "[{}] (SYN_RECEIVED) received valid ACK: SYN_RECEIVED -> ESTABLISHED",
                     self.sock
                 );
@@ -1028,18 +1038,22 @@ impl TCB {
             | ConnectionState::TIME_WAIT = self.state
             {
                 if ackn < self.snd.una {
-                    debug!(
+                    tcp_debug!(
                         "[{}] ({:?}) received duplicate ACK number {}: ignoring",
-                        self.sock, self.state, ackn
+                        self.sock,
+                        self.state,
+                        ackn
                     );
 
                     return Ok(None);
                 } else if ackn > self.snd.nxt {
                     let ack = self.create_ack(&[])?;
 
-                    debug!(
+                    tcp_debug!(
                         "[{}] ({:?}) received ACK number {} for data not transmitted: constructed ACK",
-                        self.sock, self.state, ackn
+                        self.sock,
+                        self.state,
+                        ackn
                     );
 
                     return Ok(Some(ack));
@@ -1059,9 +1073,11 @@ impl TCB {
                             self.snd.wl1 = seqn;
                             self.snd.wl2 = ackn;
 
-                            debug!(
+                            tcp_debug!(
                                 "[{}] ({:?}) updated send window size: {}",
-                                self.sock, self.state, self.snd.wnd
+                                self.sock,
+                                self.state,
+                                self.snd.wnd
                             );
                         }
                     }
@@ -1070,7 +1086,7 @@ impl TCB {
                 match self.state {
                     ConnectionState::ESTABLISHED => {}
                     ConnectionState::FIN_WAIT_1 => {
-                        debug!(
+                        tcp_debug!(
                             "[{}] (FIN_WAIT_1) received ACK for FIN: FIN_WAIT_1 -> FIN_WAIT_2",
                             self.sock
                         );
@@ -1079,7 +1095,7 @@ impl TCB {
                     }
                     ConnectionState::FIN_WAIT_2 | ConnectionState::CLOSE_WAIT => {}
                     ConnectionState::CLOSING => {
-                        debug!(
+                        tcp_debug!(
                             "[{}] (CLOSING) received ACK for FIN: CLOSING -> TIME_WAIT",
                             self.sock
                         );
@@ -1088,7 +1104,7 @@ impl TCB {
                         self.state = ConnectionState::TIME_WAIT;
                     }
                     ConnectionState::LAST_ACK => {
-                        warn!(
+                        tcp_warn!(
                             "[{}] (LAST_ACK) received ACK for FIN: LAST_ACK -> CLOSED",
                             self.sock
                         );
@@ -1124,9 +1140,10 @@ impl TCB {
                             self.rcv.nxt = self.rcv.nxt.wrapping_add(payload.len() as u32);
                             self.rcv.wnd = self.rcv.wnd.saturating_sub(payload.len() as u16);
 
-                            debug!(
+                            tcp_debug!(
                                 "[{}] ({:?}) received expected payload: buffering in-order",
-                                self.sock, self.state
+                                self.sock,
+                                self.state
                             );
 
                             // Check if out-of-order segments can now be
@@ -1151,9 +1168,10 @@ impl TCB {
                         // Received data we were not expecting yet. Data is
                         // buffered and RCV.NXT is kept the same.
                         Ordering::Greater => {
-                            debug!(
+                            tcp_debug!(
                                 "[{}] ({:?}) received out-of-order payload: buffering out-of-order",
-                                self.sock, self.state
+                                self.sock,
+                                self.state
                             );
 
                             self.rcv_buf.insert(seqn, payload.into());
@@ -1167,9 +1185,10 @@ impl TCB {
 
                             if payload.len() <= start {
                                 // Entire payload is old/duplicate data...
-                                debug!(
+                                tcp_debug!(
                                     "[{}] ({:?}) received fully old/duplicate payload: ignoring",
-                                    self.sock, self.state
+                                    self.sock,
+                                    self.state
                                 );
                             } else {
                                 // If a segment's contents straddle the boundary
@@ -1182,9 +1201,10 @@ impl TCB {
                                 self.rcv.nxt = self.rcv.nxt.wrapping_add(payload.len() as u32);
                                 self.rcv.wnd = self.rcv.wnd.saturating_sub(payload.len() as u16);
 
-                                debug!(
+                                tcp_debug!(
                                     "[{}] ({:?}) received partially old/duplicate payload: buffering new portion in-order",
-                                    self.sock, self.state
+                                    self.sock,
+                                    self.state
                                 );
 
                                 // Check if out-of-order segments can now be
@@ -1238,7 +1258,7 @@ impl TCB {
 
                     match self.state {
                         ConnectionState::ESTABLISHED => {
-                            debug!(
+                            tcp_debug!(
                                 "[{}] (ESTABLISHED) received FIN: ESTABLISHED -> CLOSE_WAIT",
                                 self.sock
                             );
@@ -1249,7 +1269,7 @@ impl TCB {
                         // it can only be transitioned to from an incoming bare
                         // `FIN` segment, which is currently not allowed.
                         ConnectionState::FIN_WAIT_1 => {
-                            debug!(
+                            tcp_debug!(
                                 "[{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
                                 self.sock
                             );
@@ -1257,7 +1277,7 @@ impl TCB {
                             self.state = ConnectionState::CLOSING;
                         }
                         ConnectionState::FIN_WAIT_2 => {
-                            debug!(
+                            tcp_debug!(
                                 "[{}] (FIN_WAIT_2) received FIN: FIN_WAIT_2 -> TIME_WAIT",
                                 self.sock
                             );
@@ -1271,9 +1291,10 @@ impl TCB {
 
                 let ack = self.create_ack(&[])?;
 
-                debug!(
+                tcp_debug!(
                     "[{}] ({:?}) received segment data: constructed ACK",
-                    self.sock, self.state,
+                    self.sock,
+                    self.state,
                 );
 
                 return Ok(Some(ack));
@@ -1289,7 +1310,7 @@ impl TCB {
                     let ack = self.create_ack(&[])?;
                     self.time_wait = Instant::now();
 
-                    debug!(
+                    tcp_debug!(
                         "[{}] (TIME_WAIT) received FIN: reset TIME_WAIT timer and constructed ACK",
                         self.sock
                     );
@@ -1352,7 +1373,7 @@ impl TCB {
                         ip.set_header_checksum();
                         rst.set_checksum(&ip, &[]);
 
-                        warn!(
+                        tcp_warn!(
                             "[{}] ({state:?}) max retransmit limit reached, constructed RST: {state:?} -> CLOSED",
                             self.sock,
                             state = self.state,
@@ -1368,7 +1389,7 @@ impl TCB {
 
                         segments.push_back(TcpSegment::new(retransmit.segment.ip, retransmit.segment.tcp, &retransmit.segment.payload));
 
-                        debug!(
+                        tcp_debug!(
                             "[{}] ({:?}) segment retransmitted, updated transmit count: {}",
                             self.sock, self.state, retransmit.transmit_count
                         );
@@ -1577,7 +1598,7 @@ impl TCB {
 /// Logs an incoming TCP segment (debug builds only).
 #[allow(unused_variables)]
 pub fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
-    debug!(
+    tcp_debug!(
         "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
         iph.version(),
         iph.ihl(),
@@ -1595,7 +1616,7 @@ pub fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
         iph.dst(),
     );
 
-    debug!(
+    tcp_debug!(
         "received tcp segment   | src port: {}, dst port: {}, seq num: {}, ack num: {}, data offset: {}, urg: {}, ack: {}, psh: {}, rst: {}, syn: {}, fin: {}, window: {}, chksum: 0x{:04x} (valid: {}), mss: {:?}",
         tcph.src_port(),
         tcph.dst_port(),
@@ -1614,7 +1635,7 @@ pub fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
         tcph.options().mss(),
     );
 
-    debug!(
+    tcp_debug!(
         "received {} bytes of payload: {:x?}",
         payload.len(),
         payload

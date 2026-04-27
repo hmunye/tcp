@@ -7,11 +7,20 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/hmunye/tcp"
 description = """
-Implementation of the Transmission Control Protocol (TCP), primarily based on 
-RFC 793.
+User-space implementation of the Transmission Control Protocol (TCP), based
+primarily on RFC 793.
 """
 categories = ["network-programming"]
 keywords = ["io", "network"]
+
+[features]
+# Enable nothing.
+default = []
+
+# Enable everything.
+full = ["trace"]
+
+trace = []
 
 [dependencies]
 
