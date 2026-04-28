@@ -7,10 +7,5 @@
 
 pub mod fsm;
 
-pub mod headers;
-
-pub mod socket;
-pub use socket::{Socket, SocketAddr};
-
 pub mod segment;
 pub use segment::TcpSegment;

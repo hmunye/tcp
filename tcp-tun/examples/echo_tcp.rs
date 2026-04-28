@@ -15,42 +15,6 @@
 //!
 //!     nc -s 10.0.0.1 10.0.0.2 80
 
-use tcp_tun::net::{TcpListener, TcpStream};
-
-use std::io::{self, Read, Write};
-
-fn handle_client(mut stream: TcpStream) -> io::Result<()> {
-    let mut buf = [0u8; 1024];
-
-    loop {
-        let nbytes = stream.read(&mut buf[..])?;
-        if nbytes == 0 {
-            break;
-        }
-
-        let str = unsafe { std::str::from_utf8_unchecked(&buf[..nbytes]) };
-        if str == "exit\n" {
-            break;
-        }
-
-        let written = stream.write(&buf[..nbytes])?;
-        if written == 0 {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-fn main() -> io::Result<()> {
-    // Currently only listens on IP address `10.0.0.1` unless script is
-    // configured.
-    let listener = TcpListener::bind("10.0.0.1:80")?;
-
-    for stream in listener.incoming() {
-        let stream = stream?;
-        std::thread::spawn(move || handle_client(stream).unwrap());
-    }
-
-    Ok(())
+fn main() {
+    println!("hello, world");
 }

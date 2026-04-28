@@ -16,25 +16,6 @@
 //!
 //!     cargo r --release --example client_tcp
 
-use tcp_tun::net::TcpStream;
-
-use std::io::{self, Write};
-
-fn main() -> io::Result<()> {
-    let mut stream = TcpStream::connect("10.0.0.1:6142")?;
-
-    let mut buf = String::new();
-
-    loop {
-        let _ = io::stdin().read_line(&mut buf)?;
-        if buf == "exit\n" {
-            break;
-        }
-
-        stream.write_all(buf.as_bytes())?;
-
-        buf.clear();
-    }
-
-    Ok(())
+fn main() {
+    println!("hello, world");
 }

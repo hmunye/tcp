@@ -2,9 +2,9 @@
 //! termination and retransmission, and handle user requests synchronously.
 
 use tcp::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
-use tcp::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
-use tcp::protocol::{Socket, SocketAddr};
+use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
 use tcp::{Error, Result};
+use tcp::{Socket, SocketAddr};
 
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::os::unix::io::{AsRawFd, RawFd};

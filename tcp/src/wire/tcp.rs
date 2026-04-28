@@ -895,7 +895,7 @@ mod tests {
             [192, 168, 0, 44],
             header.header_len() as u16,
             64,
-            crate::protocol::headers::Protocol::TCP,
+            crate::wire::Protocol::TCP,
         )
         .unwrap();
 

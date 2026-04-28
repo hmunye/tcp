@@ -417,10 +417,10 @@ impl Default for Ipv4Header {
 }
 
 /// Assigned Internet Protocol Numbers (RFC 1700).
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 #[allow(clippy::upper_case_acronyms)]
+#[repr(u8)]
 pub enum Protocol {
     /// Internet Control Message
     ICMP = 1,

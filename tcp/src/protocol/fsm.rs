@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 use std::{io, mem};
 
-use crate::protocol::headers::{Ipv4Header, Protocol, TcpHeader};
-use crate::protocol::{Socket, SocketAddr, TcpSegment};
+use crate::wire::{Ipv4Header, Protocol, TcpHeader};
 use crate::{Error, Result};
+use crate::{Socket, SocketAddr, protocol::TcpSegment};
 
 /// Initial Retransmission Timeout (`RTO`) in seconds.
 pub const RTO: u64 = 1;

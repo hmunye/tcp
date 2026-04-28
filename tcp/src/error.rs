@@ -1,4 +1,4 @@
-//! Transmission Control Protocol (TCP) error types.
+//! TCP error types.
 
 use std::{error, fmt, io, result};
 
@@ -137,7 +137,7 @@ impl fmt::Display for ParseError {
 pub enum HeaderError {
     /// IPv4 payload length exceeds the maximum allowed size.
     PayloadTooLarge { provided: u16, max: u16 },
-    /// Adding TCP option will exceed maximum allowed size.
+    /// Appending TCP option will exceed maximum allowed size.
     OptionLengthExceeded { current: usize, max: usize },
     /// Invalid TCP `MSS` option value.
     InvalidMssOption,

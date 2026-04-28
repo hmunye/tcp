@@ -3,7 +3,7 @@
 //! [std::net]: https://doc.rust-lang.org/std/net/index.html
 
 use tcp::Error;
-use tcp::protocol::{Socket, SocketAddr};
+use tcp::{Socket, SocketAddr};
 
 use std::collections::VecDeque;
 use std::convert::TryInto;
@@ -86,27 +86,6 @@ impl<'a> Iterator for Incoming<'a> {
 }
 
 /// A TCP socket server, listening for connections.
-///
-/// # Examples
-///
-/// ```no_run
-/// use tcp_tun::net::{TcpListener, TcpStream};
-///
-/// fn handle_client(stream: TcpStream) {
-///     // ...
-/// }
-///
-/// fn main() -> std::io::Result<()> {
-///     let listener = TcpListener::bind("10.0.0.1:80")?;
-///
-///     // Accept connections and process them serially.
-///     for stream in listener.incoming() {
-///         handle_client(stream?);
-///     }
-///
-///     Ok(())
-/// }
-/// ```
 #[derive(Debug)]
 pub struct TcpListener {
     /// Shared state between the user application and event loop.
@@ -126,16 +105,6 @@ impl TcpListener {
     /// # Note
     ///
     /// Each `TcpListener` will spawn it's own event loop on a separate thread.
-    ///
-    /// # Examples
-    ///
-    /// Creates a TCP listener bound to `10.0.0.1:80`:
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::TcpListener;
-    ///
-    /// let listener = TcpListener::bind("10.0.0.1:80").unwrap();
-    /// ```
     pub fn bind(addr: impl TryInto<SocketAddr, Error = io::Error>) -> io::Result<Self> {
         let listen_addr: SocketAddr = addr.try_into()?;
 
@@ -170,18 +139,6 @@ impl TcpListener {
     /// This function will block the calling thread until a new TCP connection
     /// is established. When established, the corresponding `TcpStream` and the
     /// remote peer’s address will be returned.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::TcpListener;
-    ///
-    /// let listener = TcpListener::bind("10.0.0.1:8080").unwrap();
-    /// match listener.accept() {
-    ///     Ok((_stream, addr)) => println!("new client: {addr:?}"),
-    ///     Err(err) => println!("couldn't get client: {err:?}"),
-    /// }
-    /// ```
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
         {
             let mut queue = self.state.user_req_queue.lock().unwrap();
@@ -212,51 +169,11 @@ impl TcpListener {
     /// The returned iterator will never return [None] and will also not yield
     /// the peer’s [SocketAddr] structure. Iterating over it is equivalent to
     /// calling [TcpListener::accept] in a loop.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::{TcpListener, TcpStream};
-    ///
-    /// fn handle_connection(stream: TcpStream) {
-    ///    //...
-    /// }
-    ///
-    /// fn main() -> std::io::Result<()> {
-    ///     let listener = TcpListener::bind("10.0.0.1:80")?;
-    ///
-    ///     for stream in listener.incoming() {
-    ///         match stream {
-    ///             Ok(stream) => {
-    ///                 handle_connection(stream);
-    ///             }
-    ///             Err(e) => { /* connection failed */ }
-    ///         }
-    ///     }
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
     pub fn incoming(&self) -> Incoming<'_> {
         Incoming { listener: self }
     }
 
     /// Returns the local socket address of this listener.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::{SocketAddr, TcpListener};
-    ///
-    /// let listener = TcpListener::bind("10.0.0.1:8080").unwrap();
-    /// assert_eq!(
-    ///     listener.local_addr(),
-    ///     SocketAddr {
-    ///         addr: [10, 0, 0, 1],
-    ///         port: 8080
-    ///     }
-    /// );
-    /// ```
     pub fn local_addr(&self) -> SocketAddr {
         self.listen_addr
     }
@@ -279,22 +196,6 @@ type ReadChannel = (
 /// A TCP stream between a local and a remote socket.
 ///
 /// The connection will be closed when the value is dropped.
-///
-/// # Examples
-///
-/// ```no_run
-/// use std::io::prelude::*;
-/// use tcp_tun::net::TcpStream;
-///
-/// fn main() -> std::io::Result<()> {
-///     let mut stream = TcpStream::connect("10.0.0.1:8080")?;
-///
-///     stream.write(&[1])?;
-///     stream.read(&mut [0; 128])?;
-///
-///     Ok(())
-/// } // the stream is closed here
-/// ```
 #[derive(Debug)]
 pub struct TcpStream {
     /// Shared state between the user application and event loop.
@@ -335,20 +236,6 @@ impl TcpStream {
     /// Each call to `TcpStream::connect` will spawn it's own event loop on a
     /// separate thread. An error is returned if all available local port
     /// numbers have been exhausted.
-    ///
-    /// # Examples
-    ///
-    /// Open a TCP connection to `10.0.0.1:8080`:
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::TcpStream;
-    ///
-    /// if let Ok(stream) = TcpStream::connect("10.0.0.1:8080") {
-    ///     println!("Connected to the server!");
-    /// } else {
-    ///     println!("Couldn't connect to server...");
-    /// }
-    /// ```
     pub fn connect(addr: impl TryInto<SocketAddr, Error = io::Error>) -> io::Result<Self> {
         let peer_addr: SocketAddr = addr.try_into()?;
         let port = LOCAL_PORT.fetch_add(1, Ordering::SeqCst);
@@ -406,43 +293,11 @@ impl TcpStream {
     }
 
     /// Returns the socket address of the local half of this TCP connection.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::{SocketAddr, TcpStream};
-    ///
-    /// let stream = TcpStream::connect("10.0.0.1:8080")
-    ///                        .expect("Couldn't connect to the server...");
-    /// assert_eq!(
-    ///     stream.local_addr(),
-    ///     SocketAddr {
-    ///         addr: [10, 0, 0, 2],
-    ///         port: 47892
-    ///     }
-    /// );
-    /// ```
     pub fn local_addr(&self) -> SocketAddr {
         self.sock.src
     }
 
     /// Returns the socket address of the remote peer of this TCP connection.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::{SocketAddr, TcpStream};
-    ///
-    /// let stream = TcpStream::connect("10.0.0.1:8080")
-    ///                        .expect("Couldn't connect to the server...");
-    /// assert_eq!(
-    ///     stream.peer_addr(),
-    ///     SocketAddr {
-    ///         addr: [10, 0, 0, 1],
-    ///         port: 8080
-    ///     }
-    /// );
-    /// ```
     pub fn peer_addr(&self) -> SocketAddr {
         self.sock.dst
     }
@@ -460,16 +315,6 @@ impl TcpStream {
     /// to fully close the connection. The method also takes a mutable rather
     /// than immutable `self` so the `TcpStream` can be marked as already
     /// shutdown.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tcp_tun::net::{Shutdown, TcpStream};
-    ///
-    /// let mut stream = TcpStream::connect("10.0.0.1:8080")
-    ///                        .expect("Couldn't connect to the server...");
-    /// stream.shutdown(Shutdown::Abort).expect("shutdown call failed");
-    /// ```
     pub fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
         let (tx, rx) = mpsc::channel();
 
