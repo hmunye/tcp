@@ -24,6 +24,7 @@
 // TODO: Update lints after refactor.
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
+#![allow(non_camel_case_types)]
 
 // TODO: Fix limitations
 //

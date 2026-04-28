@@ -1721,7 +1721,7 @@ mod tests {
                 ack.set_ack();
 
                 // Transitions from `SYN_RECEIVED` -> `ESTABLISHED`...
-                let maybe_ack = conn.on_segment(&Default::default(), &ack, &[]).unwrap();
+                let maybe_ack = conn.on_segment(&Ipv4Header::default(), &ack, &[]).unwrap();
 
                 (conn, maybe_ack)
             }
@@ -1744,7 +1744,7 @@ mod tests {
                 ack.set_ack();
 
                 // Transitions from `FIN_WAIT_1` -> `FIN_WAIT_2`...
-                let maybe_ack = conn.on_segment(&Default::default(), &ack, &[]).unwrap();
+                let maybe_ack = conn.on_segment(&Ipv4Header::default(), &ack, &[]).unwrap();
 
                 (conn, maybe_ack)
             }
@@ -1762,7 +1762,9 @@ mod tests {
                 fin_ack.set_ack();
 
                 // Transitions from `SYN_RECEIVED` -> `CLOSE_WAIT`...
-                let maybe_ack = conn.on_segment(&Default::default(), &fin_ack, &[]).unwrap();
+                let maybe_ack = conn
+                    .on_segment(&Ipv4Header::default(), &fin_ack, &[])
+                    .unwrap();
 
                 (conn, maybe_ack)
             }
@@ -1780,7 +1782,9 @@ mod tests {
                 fin_ack.set_ack();
 
                 // Transitions from `SYN_RECEIVED` -> `CLOSE_WAIT`...
-                let _ = conn.on_segment(&Default::default(), &fin_ack, &[]).unwrap();
+                let _ = conn
+                    .on_segment(&Ipv4Header::default(), &fin_ack, &[])
+                    .unwrap();
 
                 // Transitions from `CLOSE_WAIT` -> `LAST_ACK`...
                 let maybe_fin_ack = conn.close().unwrap();
@@ -1804,7 +1808,9 @@ mod tests {
                 fin_ack.set_ack();
 
                 // Transitions from `FIN_WAIT_1` -> `TIME_WAIT`...
-                let maybe_ack = conn.on_segment(&Default::default(), &fin_ack, &[]).unwrap();
+                let maybe_ack = conn
+                    .on_segment(&Ipv4Header::default(), &fin_ack, &[])
+                    .unwrap();
 
                 (conn, maybe_ack)
             }

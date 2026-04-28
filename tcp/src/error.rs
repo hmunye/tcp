@@ -2,6 +2,8 @@
 
 use std::{error, fmt, io, result};
 
+use crate::wire::Protocol;
+
 /// Convenience wrapper around `Result` for `tcp::Error`.
 pub type Result<T> = result::Result<T, Error>;
 
@@ -9,7 +11,8 @@ pub type Result<T> = result::Result<T, Error>;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Transport-level error (e.g., connection reset).
+    /// Header serialization/deserialization or transport-level error (e.g.,
+    /// connection reset).
     Io(io::Error),
     /// Invalid or malformed TCP over IPv4 segment.
     Parse(ParseError),
@@ -56,11 +59,11 @@ pub enum ParseError {
     /// Invalid IP version.
     InvalidVersion { provided: u8, expected: u8 },
     /// Invalid IPv4 `IHL`.
-    InvalidIhl { provided: u8, expected: u8 },
+    InvalidIhl { provided: u8, min: u8, max: u8 },
     /// IPv4 `total_length` less than the minimum implied by `IHL`.
     InvalidTotalLength { provided: u16, expected: u8 },
     /// Unsupported IPv4 `protocol`.
-    InvalidProtocol(u8),
+    InvalidProtocol(Protocol),
     /// Invalid TCP `data_offset`.
     InvalidDataOffset { provided: u16, min: u16, max: u16 },
     /// TCP header length less than the value implied by `data_offset`.
@@ -88,8 +91,11 @@ impl fmt::Display for ParseError {
                     "invalid IP version: IPv{provided} (expected IPv{expected})"
                 )
             }
-            ParseError::InvalidIhl { provided, expected } => {
-                write!(f, "invalid IPv4 IHL: {provided} (expected {expected})")
+            ParseError::InvalidIhl { provided, min, max } => {
+                write!(
+                    f,
+                    "invalid IPv4 IHL: {provided} (expected range: {min}..={max})"
+                )
             }
             ParseError::InvalidTotalLength { provided, expected } => {
                 write!(
@@ -98,10 +104,7 @@ impl fmt::Display for ParseError {
                 )
             }
             ParseError::InvalidProtocol(proto) => {
-                write!(
-                    f,
-                    "invalid IPv4 protocol: {proto} (unsupported or undefined)"
-                )
+                write!(f, "invalid IPv4 protocol: {proto:?}")
             }
             ParseError::InvalidDataOffset { provided, min, max } => {
                 write!(
