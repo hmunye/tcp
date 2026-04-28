@@ -474,7 +474,7 @@ impl TryFrom<&[u8]> for TcpHeader {
 
         // There are less bytes in the buffer than advertised by data offset.
         if (data_offset << 2) > header_raw.len() as u16 {
-            return Err(Error::Parse(ParseError::HeaderLengthMismatch {
+            return Err(Error::Parse(ParseError::InvalidHeaderLength {
                 provided: header_raw.len(),
                 expected: data_offset << 2,
             }));
@@ -506,7 +506,7 @@ impl TryFrom<&[u8]> for TcpHeader {
 
                     // SAFETY: Checked data offset >= Self::MIN_DATA_OFFSET.
                     if ((data_offset - Self::MIN_DATA_OFFSET) << 2) as usize != rest_len {
-                        return Err(Error::Parse(ParseError::OptionsLengthMismatch {
+                        return Err(Error::Parse(ParseError::InvalidOptionsLength {
                             provided: rest_len,
                             expected: ((data_offset - Self::MIN_DATA_OFFSET) << 2),
                         }));
@@ -633,10 +633,9 @@ impl TcpOptions {
 
             // The MSS option would overflow the options buffer.
             if current_len + Self::MSS_LEN > Self::MAX_OPTIONS_LEN {
-                return Err(Error::Header(HeaderError::InsufficientOptionSpace {
-                    attempted_len: (current_len + Self::MSS_LEN),
-                    current_len,
-                    max_len: Self::MAX_OPTIONS_LEN,
+                return Err(Error::Header(HeaderError::OptionLengthExceeded {
+                    current: current_len,
+                    max: Self::MAX_OPTIONS_LEN,
                 }));
             }
 
@@ -677,7 +676,7 @@ impl TryFrom<&[u8]> for TcpOptions {
 
     fn try_from(opts_slice: &[u8]) -> Result<Self, Self::Error> {
         if opts_slice.len() > Self::MAX_OPTIONS_LEN {
-            return Err(Error::Parse(ParseError::InvalidOptionsLength {
+            return Err(Error::Parse(ParseError::OptionsLengthTooLarge {
                 provided: opts_slice.len(),
                 max: Self::MAX_OPTIONS_LEN,
             }));

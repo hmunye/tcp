@@ -18,7 +18,7 @@
 //! - `default`: Enables none of the features listed below.
 //! - `full`: Enables all features listed below.
 //! - `trace`: Enables internal TCP execution tracing of the state machine
-//!   and segment processing for debugging.
+//!   and segment processing for debugging purposes.
 //!
 //! [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
 
@@ -44,7 +44,7 @@
 #[macro_use]
 pub(crate) mod macros;
 
-pub mod protocol;
-
 pub mod error;
 pub use error::{Error, HeaderError, ParseError, Result};
+
+pub mod protocol;

@@ -42,7 +42,7 @@ pub struct Ipv4Header {
     tos: u8,
     /// Total length is the length of the datagram, measured in octets,
     /// including internet header and payload.
-    total_len: u16,
+    total_length: u16,
     /// An identifying value assigned by the sender to aid in assembling the
     /// fragments of a datagram.
     id: u16,
@@ -127,7 +127,7 @@ impl Ipv4Header {
         }
 
         Ok(Self {
-            total_len: Self::MIN_HEADER_LEN + payload_len,
+            total_length: Self::MIN_HEADER_LEN + payload_len,
             ttl,
             protocol,
             src_addr: src,
@@ -156,8 +156,8 @@ impl Ipv4Header {
     }
 
     /// Returns the `total length` field of the IPv4 header.
-    pub fn total_len(&self) -> u16 {
-        self.total_len
+    pub fn total_length(&self) -> u16 {
+        self.total_length
     }
 
     /// Sets the `total length` field of the IPv4 header given a payload length.
@@ -174,7 +174,7 @@ impl Ipv4Header {
             }));
         }
 
-        self.total_len = Self::MIN_HEADER_LEN + payload_len;
+        self.total_length = Self::MIN_HEADER_LEN + payload_len;
 
         Ok(())
     }
@@ -247,7 +247,7 @@ impl Ipv4Header {
     /// Returns the payload length of the IPv4 header.
     pub fn payload_len(&self) -> u16 {
         // SAFETY: total_len >= (IHL << 2) is checked when parsing.
-        self.total_len - Self::MIN_HEADER_LEN
+        self.total_length - Self::MIN_HEADER_LEN
     }
 
     /// Returns the computed checksum of the IPv4 header.
@@ -295,7 +295,7 @@ impl Ipv4Header {
 
         raw_header[0] = self.version_ihl;
         raw_header[1] = self.tos;
-        raw_header[2..4].copy_from_slice(&self.total_len.to_be_bytes());
+        raw_header[2..4].copy_from_slice(&self.total_length.to_be_bytes());
         raw_header[4..6].copy_from_slice(&self.id.to_be_bytes());
         raw_header[6..8].copy_from_slice(&self.flags_and_offset.to_be_bytes());
         raw_header[8] = self.ttl;
@@ -357,7 +357,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
         Ok(Self {
             version_ihl,
             tos: header_raw[1],
-            total_len: {
+            total_length: {
                 let total_len = u16::from_be_bytes([header_raw[2], header_raw[3]]);
 
                 // Total length is less than the header length.
@@ -407,7 +407,7 @@ impl Default for Ipv4Header {
             flags_and_offset: 0b010_0000000000000,
             header_checksum: 0,
 
-            total_len: Self::MIN_HEADER_LEN,
+            total_length: Self::MIN_HEADER_LEN,
             ttl: 0,
             protocol: Protocol::TCP,
             src_addr: [0; 4],
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(header.version(), 4);
         assert_eq!(header.ihl(), 5);
         assert_eq!(header.tos(), 0);
-        assert_eq!(header.total_len(), 60);
+        assert_eq!(header.total_length(), 60);
         assert_eq!(header.id(), 48890);
         assert!(header.dont_fragment());
         assert!(!header.more_fragments());
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(header.version(), 4);
         assert_eq!(header.ihl(), 5);
         assert_eq!(header.tos(), 0);
-        assert_eq!(header.total_len(), 60);
+        assert_eq!(header.total_length(), 60);
         assert_eq!(header.id(), 48890);
         assert!(header.dont_fragment());
         assert!(!header.more_fragments());
@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(header.version(), 4);
         assert_eq!(header.ihl(), 5);
         assert_eq!(header.tos(), 0);
-        assert_eq!(header.total_len(), 60);
+        assert_eq!(header.total_length(), 60);
         assert_eq!(header.id(), 48890);
         assert!(header.dont_fragment());
         assert!(!header.more_fragments());

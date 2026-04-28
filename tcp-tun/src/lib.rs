@@ -4,7 +4,6 @@
 //! [tcp]: https://github.com/hmunye/tcp/tree/main/tcp
 //! [std::net]: https://doc.rust-lang.org/std/net/index.html
 
-#![deny(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 
