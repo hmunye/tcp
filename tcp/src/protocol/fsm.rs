@@ -1603,7 +1603,7 @@ pub fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
         iph.version(),
         iph.ihl(),
         iph.tos(),
-        iph.total_len(),
+        iph.total_length(),
         iph.id(),
         iph.dont_fragment(),
         iph.more_fragments(),
