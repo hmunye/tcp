@@ -2,8 +2,7 @@
 //! termination and retransmission, and handle user requests synchronously.
 
 use tcp::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
-use tcp::wire::ipv4::{Ipv4Header, Protocol};
-use tcp::wire::tcp::TcpHeader;
+use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
 use tcp::{Error, Result};
 use tcp::{Socket, SocketAddr};
 

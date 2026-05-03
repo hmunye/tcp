@@ -14,13 +14,12 @@ how the protocol works in practice, based primarily on [RFC 793].
 
 ## Features
 
-- Full TCP connection lifecycle: connection establishment (`SYN`), termination (`FIN`), and reset (`RST`)
-- Bidirectional data transfer
+- Full TCP connection lifecycle; connection establishment, bidirectional data transfer, termination, and reset
 - `TIME-WAIT` state handling
-- Retransmission logic with exponential backoff and retry limits
+- Retransmission logic with exponential backoff and retry limit
 - Out-of-order segment handling and payload reassembly
 - Flow control using send/receive windows and peer `MSS`
-- IPv4/TCP header parsing and construction with checksum validation
+- IPv4/TCP header parsing and configuration with checksum validation
 
 ## Quick Start
 
@@ -37,7 +36,7 @@ Or in `Cargo.toml`:
 tcp = { git = "https://github.com/hmunye/tcp.git", version = "0.1.0" }
 ```
 
-Examples of the TCP implementation over a Linux `TUN` interface can be found 
+Example of the TCP implementation over a Linux `TUN` interface can be found
 [here](https://github.com/hmunye/tcp/tree/main/tcp-tun).
 
 ## License

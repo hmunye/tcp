@@ -1,7 +1,4 @@
-use super::TcpOptions;
-
-use crate::util::FixedBuf;
-use crate::wire::ipv4::Ipv4Header;
+use crate::wire::{FixedBuf, Ipv4Header, TcpOptions};
 use crate::{Error, ParseError, Result};
 
 /// TCP Segment Header [(RFC 793, Section 3.1)].
@@ -141,6 +138,19 @@ impl TcpHeader {
     /// Creates a new TCP header with the given source and destination ports,
     /// initial sequence number (ISN), and window size. Other fields are set to
     /// their _defaults_.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::TcpHeader;
+    ///
+    /// let tph = TcpHeader::new(
+    ///     41324,
+    ///     80,
+    ///     0,
+    ///     65535,
+    /// );
+    /// ```
     #[inline]
     #[must_use]
     pub const fn new(src_port: u16, dst_port: u16, seq_number: u32, window: u16) -> Self {
@@ -287,6 +297,42 @@ impl TcpHeader {
     }
 
     /// Computes and sets the TCP header checksum field.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::{Protocol, Ipv4Header, TcpHeader};
+    ///
+    /// let mut tph = TcpHeader::new(
+    ///     41324,
+    ///     80,
+    ///     0,
+    ///     65535,
+    /// );
+    /// let payload = b"hello, world";
+    ///
+    /// let mut iph = Ipv4Header::new(
+    ///     0,
+    ///     [192, 168, 0, 1],
+    ///     [192, 168, 0, 44],
+    ///     (tph.header_len() + payload.len()) as u16,
+    ///     64,
+    ///     Protocol::TCP,
+    /// )
+    /// .unwrap();
+    ///
+    /// // Set initial checksum value.
+    /// tph.set_checksum(&iph, payload);
+    /// assert_eq!(tph.checksum(), tph.compute_checksum(&iph, payload));
+    ///
+    /// // Invalidates the checksum.
+    /// tph.set_syn();
+    ///
+    /// assert_ne!(tph.checksum(), tph.compute_checksum(&iph, payload));
+    ///
+    /// tph.set_checksum(&iph, payload);
+    /// assert_eq!(tph.checksum(), tph.compute_checksum(&iph, payload));
+    /// ```
     #[inline]
     pub fn set_checksum(&mut self, ip_header: &Ipv4Header, payload: &[u8]) {
         self.checksum = self.compute_checksum(ip_header, payload);
@@ -421,6 +467,23 @@ impl TcpHeader {
 
     /// Returns the memory representation of the TCP header as a [`FixedBuf`]
     /// in big-endian (network) byte order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::TcpHeader;
+    ///
+    /// let tph = TcpHeader::new(
+    ///     41324,
+    ///     80,
+    ///     0,
+    ///     65535,
+    /// );
+    ///
+    /// let buf = tph.to_bytes();
+    /// // Network-byte order representation of the TCP header.
+    /// let bytes = buf.as_slice();
+    /// ```
     #[inline]
     pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
         let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
@@ -444,7 +507,28 @@ impl TcpHeader {
     ///
     /// Returns an error if an I/O error is encountered or the available bytes
     /// are insufficient or malformed to form a valid TCP header.
-    #[inline]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    ///
+    /// use tcp::wire::TcpHeader;
+    ///
+    /// // Minimal TCP header bytes (`SYN`, no options).
+    /// let data: [u8; 20] = [
+    ///     0xa0, 0x16, 0x01, 0xbb,
+    ///     0xbc, 0xbb, 0x54, 0xa8,
+    ///     0x00, 0x00, 0x00, 0x00,
+    ///     0x50, 0x02, 0xfa, 0xf0,
+    ///     0x80, 0x3e, 0x00, 0x00,
+    /// ];
+    ///
+    /// let mut cursor = Cursor::new(&data);
+    /// let tph = TcpHeader::read(&mut cursor).unwrap();
+    /// assert_eq!(tph.data_offset(), 5);
+    /// assert!(tph.syn());
+    /// ```
     pub fn read<T: std::io::Read>(r: &mut T) -> Result<Self> {
         // FIXME: Use `Read::read_buf` with `FixedBuf` when it is stable.
         //
@@ -473,8 +557,39 @@ impl TcpHeader {
     ///
     /// Returns an error if an I/O error is encountered.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
+    ///
+    /// let mut tph = TcpHeader::new(
+    ///     41324,
+    ///     80,
+    ///     0,
+    ///     65535,
+    /// );
+    /// let payload = b"hello, world";
+    ///
+    /// let mut iph = Ipv4Header::new(
+    ///     0,
+    ///     [192, 168, 0, 1],
+    ///     [192, 168, 0, 44],
+    ///     (tph.header_len() + payload.len()) as u16,
+    ///     64,
+    ///     Protocol::TCP,
+    /// )
+    /// .unwrap();
+    ///
+    /// // **Must** set checksums before writing TCP header.
+    /// iph.set_header_checksum();
+    /// tph.set_checksum(&iph, payload);
+    ///
+    /// let mut buf = Vec::new();
+    /// tph.write(&mut buf).unwrap();
+    /// assert_eq!(buf.len(), 20);
+    /// ```
+    ///
     /// [`set`]: TcpHeader::set_checksum
-    #[inline]
     pub fn write<T: std::io::Write>(&self, w: &mut T) -> Result<()> {
         Ok(w.write_all(self.to_bytes().as_slice())?)
     }

@@ -1,4 +1,4 @@
-use crate::util::FixedBuf;
+use crate::wire::FixedBuf;
 use crate::{Error, ParseError, Result};
 
 /// IPv4 header options.

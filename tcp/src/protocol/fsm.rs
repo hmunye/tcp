@@ -7,8 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 use std::{io, mem};
 
-use crate::wire::ipv4::{Ipv4Header, Protocol};
-use crate::wire::tcp::TcpHeader;
+use crate::wire::{Ipv4Header, Protocol, TcpHeader};
 use crate::{Error, Result};
 use crate::{Socket, SocketAddr, protocol::TcpSegment};
 

@@ -1,4 +1,4 @@
-use crate::util::FixedBuf;
+use crate::wire::FixedBuf;
 use crate::{Error, HeaderError, ParseError, Result};
 
 /// TCP header options.

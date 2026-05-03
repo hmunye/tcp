@@ -1,11 +1,11 @@
 //! TCP error types.
 
-use std::{error, fmt, io, result};
+use std::{fmt, io};
 
-use crate::wire::ipv4::Protocol;
+use crate::wire::Protocol;
 
 /// Convenience wrapper around `Result` for `tcp::Error`.
-pub type Result<T> = result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur while processing TCP segments.
 #[derive(Debug)]
@@ -20,7 +20,7 @@ pub enum Error {
     Header(HeaderError),
 }
 
-impl error::Error for Error {}
+impl std::error::Error for Error {}
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
@@ -76,7 +76,7 @@ pub enum ParseError {
     InvalidOptionsLength { provided: usize, expected: usize },
 }
 
-impl error::Error for ParseError {}
+impl std::error::Error for ParseError {}
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -139,7 +139,7 @@ pub enum HeaderError {
     InvalidTcpMssOption,
 }
 
-impl error::Error for HeaderError {}
+impl std::error::Error for HeaderError {}
 
 impl fmt::Display for HeaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

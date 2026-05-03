@@ -1,6 +1,4 @@
-use super::{Ipv4Options, Protocol};
-
-use crate::util::FixedBuf;
+use crate::wire::{FixedBuf, Ipv4Options, Protocol};
 use crate::{Error, HeaderError, ParseError, Result};
 
 /// IPv4 Datagram Header [(RFC 791, Section 3.1)].
@@ -173,7 +171,7 @@ impl Ipv4Header {
     /// # Examples
     ///
     /// ```
-    /// use tcp::wire::ipv4::{Protocol, Ipv4Header};
+    /// use tcp::wire::{Protocol, Ipv4Header};
     ///
     /// let iph = Ipv4Header::new(
     ///     0,
@@ -291,7 +289,7 @@ impl Ipv4Header {
     /// # Examples
     ///
     /// ```
-    /// use tcp::wire::ipv4::{Protocol, Ipv4Header};
+    /// use tcp::wire::{Protocol, Ipv4Header};
     ///
     /// let mut iph = Ipv4Header::new(
     ///     0,
@@ -303,7 +301,7 @@ impl Ipv4Header {
     /// )
     /// .unwrap();
     ///
-    /// // Set initial checksum value.
+    /// // Set initial header checksum value.
     /// iph.set_header_checksum();
     /// assert_eq!(iph.header_checksum(), iph.compute_header_checksum());
     ///
@@ -409,7 +407,7 @@ impl Ipv4Header {
     /// # Examples
     ///
     /// ```
-    /// use tcp::wire::ipv4::{Protocol, Ipv4Header};
+    /// use tcp::wire::{Protocol, Ipv4Header};
     ///
     /// let mut iph = Ipv4Header::new(
     ///     0,
@@ -453,7 +451,7 @@ impl Ipv4Header {
     ///
     /// ```
     /// use std::io::Cursor;
-    /// use tcp::wire::ipv4::Ipv4Header;
+    /// use tcp::wire::Ipv4Header;
     ///
     /// // Minimal IPv4 header bytes (no options).
     /// let data: [u8; 20] = [
@@ -500,7 +498,7 @@ impl Ipv4Header {
     /// # Examples
     ///
     /// ```
-    /// use tcp::wire::ipv4::{Protocol, Ipv4Header};
+    /// use tcp::wire::{Protocol, Ipv4Header};
     ///
     /// let mut iph = Ipv4Header::new(
     ///     0,

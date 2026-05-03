@@ -34,12 +34,14 @@
 // - Handling of buffered application data (currently buffered, not drained)
 // - No zero-window probing
 // - No Initial Send Sequence Number (ISS) randomization
+//
+// TODO: Add section to module doc for missing extensions:
+//
 // - No congestion control algorithms (e.g., slow start, fast retransmit)
 // - No support for Selective Acknowledgment (SACK)
 // - No window scaling
 // - TCP Fast Open is not implemented
 // - No delayed acknowledgments
-// - IPv4 options are not supported (only MSS, others are ignored)
 
 // Must be defined first!
 #[macro_use]
@@ -52,5 +54,4 @@ pub mod socket;
 pub use socket::{AddrParseError, Socket, SocketAddr};
 
 pub mod protocol;
-pub mod util;
 pub mod wire;
