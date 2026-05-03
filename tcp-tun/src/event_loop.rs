@@ -2,7 +2,8 @@
 //! termination and retransmission, and handle user requests synchronously.
 
 use tcp::protocol::fsm::{ConnectionState, MAX_RETRANSMIT_LIMIT, MSL, RTO, TCB};
-use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
+use tcp::wire::ipv4::{Ipv4Header, Protocol};
+use tcp::wire::tcp::TcpHeader;
 use tcp::{Error, Result};
 use tcp::{Socket, SocketAddr};
 
@@ -269,8 +270,8 @@ pub fn connect_loop(state: Arc<State>, socket: Socket) -> Result<()> {
                             break;
                         }
 
-                        let src = iph.src();
-                        let dst = iph.dst();
+                        let src = iph.src_addr();
+                        let dst = iph.dst_addr();
 
                         match TcpHeader::try_from(&buf[iph.header_len()..nbytes]) {
                             Ok(tcph) => {
@@ -674,8 +675,8 @@ pub fn listen_loop(state: Arc<State>, listen_addr: SocketAddr) -> Result<()> {
                             break;
                         }
 
-                        let src = iph.src();
-                        let dst = iph.dst();
+                        let src = iph.src_addr();
+                        let dst = iph.dst_addr();
 
                         match TcpHeader::try_from(&buf[iph.header_len()..nbytes]) {
                             Ok(tcph) => {

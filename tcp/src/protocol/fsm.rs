@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 use std::{io, mem};
 
-use crate::wire::{Ipv4Header, Protocol, TcpHeader};
+use crate::wire::ipv4::{Ipv4Header, Protocol};
+use crate::wire::tcp::TcpHeader;
 use crate::{Error, Result};
 use crate::{Socket, SocketAddr, protocol::TcpSegment};
 
@@ -301,8 +302,9 @@ impl TCB {
             rst.set_rst();
 
             let mut ip = Ipv4Header::new(
-                iph.dst(),
-                iph.src(),
+                0,
+                iph.dst_addr(),
+                iph.src_addr(),
                 rst.header_len() as u16,
                 64,
                 Protocol::TCP,
@@ -329,11 +331,11 @@ impl TCB {
             // Stored in reverse order of peer's perspective.
             sock: Socket {
                 src: SocketAddr {
-                    addr: iph.dst(),
+                    addr: iph.dst_addr(),
                     port: tcph.dst_port(),
                 },
                 dst: SocketAddr {
-                    addr: iph.src(),
+                    addr: iph.src_addr(),
                     port: tcph.src_port(),
                 },
             },
@@ -1363,6 +1365,7 @@ impl TCB {
 
                         // SAFETY: payload length does not exceed maximum allowed.
                         let mut ip = Ipv4Header::new(
+                            0,
                             self.sock.src.addr,
                             self.sock.dst.addr,
                             rst.header_len() as u16,
@@ -1445,6 +1448,7 @@ impl TCB {
         syn.set_option_mss(1460)?;
 
         let mut ip = Ipv4Header::new(
+            0,
             self.sock.src.addr,
             self.sock.dst.addr,
             syn.header_len() as u16,
@@ -1482,6 +1486,7 @@ impl TCB {
         syn_ack.set_option_mss(1460)?;
 
         let mut ip = Ipv4Header::new(
+            0,
             self.sock.src.addr,
             self.sock.dst.addr,
             syn_ack.header_len() as u16,
@@ -1519,7 +1524,14 @@ impl TCB {
             ack.set_psh();
         }
 
-        let mut ip = Ipv4Header::new(self.sock.src.addr, self.sock.dst.addr, 0, 64, Protocol::TCP)?;
+        let mut ip = Ipv4Header::new(
+            0,
+            self.sock.src.addr,
+            self.sock.dst.addr,
+            0,
+            64,
+            Protocol::TCP,
+        )?;
 
         ip.set_payload_len((ack.header_len() + payload.len()) as u16)?;
 
@@ -1552,7 +1564,14 @@ impl TCB {
         fin_ack.set_fin();
         fin_ack.set_ack();
 
-        let mut ip = Ipv4Header::new(self.sock.src.addr, self.sock.dst.addr, 0, 64, Protocol::TCP)?;
+        let mut ip = Ipv4Header::new(
+            0,
+            self.sock.src.addr,
+            self.sock.dst.addr,
+            0,
+            64,
+            Protocol::TCP,
+        )?;
 
         ip.set_payload_len((fin_ack.header_len() + payload.len()) as u16)?;
 
@@ -1581,6 +1600,7 @@ impl TCB {
         }
 
         let mut ip = Ipv4Header::new(
+            0,
             self.sock.src.addr,
             self.sock.dst.addr,
             rst.header_len() as u16,
@@ -1697,6 +1717,7 @@ mod tests {
             syn.set_option_mss(1460).unwrap();
 
             let syn_ip = Ipv4Header::new(
+                0,
                 TEST_SOCKET.dst.addr,
                 TEST_SOCKET.src.addr,
                 syn.header_len() as u16,
@@ -1894,6 +1915,7 @@ mod tests {
                  }
 
                  let ip = Ipv4Header::new(
+                     0,
                      TEST_SOCKET.dst.addr,
                      TEST_SOCKET.src.addr,
                      (tcph.header_len() + payload.len()) as u16,

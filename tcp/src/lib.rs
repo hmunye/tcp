@@ -25,8 +25,9 @@
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 #![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
 
-// TODO: Fix limitations
+// TODO: Fix limitations.
 //
 // Current limitations include, but are not limited to:
 //
@@ -47,9 +48,9 @@ pub(crate) mod macros;
 pub mod error;
 pub use error::{Error, HeaderError, ParseError, Result};
 
-pub mod wire;
-
 pub mod socket;
 pub use socket::{AddrParseError, Socket, SocketAddr};
 
 pub mod protocol;
+pub mod util;
+pub mod wire;

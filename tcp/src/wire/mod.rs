@@ -1,11 +1,7 @@
-//! Low-level utilities for handling IPv4/TCP headers.
+//! IPv4/TCP headers types.
 //!
-//! Provides types for constructing, parsing, and serializing/deserializing IPv4
-//! and TCP headers. Focuses on the *wire format*, i.e., the byte-level
-//! representation transmitted over the network.
+//! Provides types for constructing, parsing, configuring, serializing, and
+//! deserializing IPv4 and TCP headers.
 
-mod ipv4;
-pub use ipv4::{Ipv4Header, Protocol};
-
-mod tcp;
-pub use tcp::TcpHeader;
+pub mod ipv4;
+pub mod tcp;

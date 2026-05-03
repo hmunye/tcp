@@ -2,7 +2,7 @@
 
 use std::{error, fmt, io, result};
 
-use crate::wire::Protocol;
+use crate::wire::ipv4::Protocol;
 
 /// Convenience wrapper around `Result` for `tcp::Error`.
 pub type Result<T> = result::Result<T, Error>;
@@ -54,24 +54,26 @@ impl fmt::Display for Error {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ParseError {
-    /// Buffer length outside the valid IPv4/TCP header range.
-    InvalidBufferLength { provided: usize, min: u16, max: u16 },
+    /// Invalid buffer length for IPv4/TCP header.
+    InvalidBufferLength {
+        provided: usize,
+        min: usize,
+        max: usize,
+    },
     /// Invalid IP version.
     InvalidVersion { provided: u8, expected: u8 },
     /// Invalid IPv4 `IHL`.
     InvalidIhl { provided: u8, min: u8, max: u8 },
-    /// IPv4 `total_length` less than the minimum implied by `IHL`.
-    InvalidTotalLength { provided: u16, expected: u8 },
-    /// Unsupported IPv4 `protocol`.
-    InvalidProtocol(Protocol),
-    /// Invalid TCP `data_offset`.
-    InvalidDataOffset { provided: u16, min: u16, max: u16 },
-    /// TCP header length less than the value implied by `data_offset`.
-    InvalidHeaderLength { provided: usize, expected: u16 },
-    /// TCP options length not equal to the value implied by `data_offset`.
-    InvalidOptionsLength { provided: usize, expected: u16 },
-    /// TCP options length exceeds the maximum allowed size.
-    OptionsLengthTooLarge { provided: usize, max: usize },
+    /// Invalid IPv4 total length.
+    InvalidTotalLength { provided: u16, expected: u16 },
+    /// Unsupported/unassigned IPv4 protocol.
+    InvalidProtocol { protocol: Protocol, value: u8 },
+    /// Invalid TCP data offset.
+    InvalidDataOffset { provided: u16, min: u8, max: u8 },
+    /// Invalid IPv4/TCP header length.
+    InvalidHeaderLength { provided: usize, expected: usize },
+    /// Invalid IPv4/TCP options length.
+    InvalidOptionsLength { provided: usize, expected: usize },
 }
 
 impl error::Error for ParseError {}
@@ -82,52 +84,43 @@ impl fmt::Display for ParseError {
             ParseError::InvalidBufferLength { provided, min, max } => {
                 write!(
                     f,
-                    "invalid buffer length: {provided} bytes available (expected range: {min}..={max})"
+                    "invalid buffer length for IPv4/TCP header; {provided} bytes available, expected: {min}..={max}"
                 )
             }
             ParseError::InvalidVersion { provided, expected } => {
                 write!(
                     f,
-                    "invalid IP version: IPv{provided} (expected IPv{expected})"
+                    "invalid IP version; IPv{provided}, expected: IPv{expected}"
                 )
             }
             ParseError::InvalidIhl { provided, min, max } => {
-                write!(
-                    f,
-                    "invalid IPv4 IHL: {provided} (expected range: {min}..={max})"
-                )
+                write!(f, "invalid IPv4 IHL; {provided}, expected: {min}..={max}")
             }
             ParseError::InvalidTotalLength { provided, expected } => {
                 write!(
                     f,
-                    "invalid IPv4 total length: {provided} bytes available, need at least {expected} bytes (per IHL)"
+                    "invalid IPv4 total length; {provided} bytes available, expected: {expected} bytes"
                 )
             }
-            ParseError::InvalidProtocol(proto) => {
-                write!(f, "invalid IPv4 protocol: {proto:?}")
+            ParseError::InvalidProtocol { protocol, value } => {
+                write!(f, "invalid IPv4 protocol: {value} ({protocol:?})")
             }
             ParseError::InvalidDataOffset { provided, min, max } => {
                 write!(
                     f,
-                    "invalid TCP data offset: {provided} (expected range: {min}..={max})"
+                    "invalid TCP data offset; {provided}, expected: {min}..={max}"
                 )
             }
             ParseError::InvalidHeaderLength { provided, expected } => {
                 write!(
                     f,
-                    "invalid TCP header length: {provided} bytes available, need at least {expected} bytes (per data offset)"
+                    "invalid IPv4/TCP header length; {provided} bytes available, expected: {expected} bytes"
                 )
             }
             ParseError::InvalidOptionsLength { provided, expected } => {
                 write!(
                     f,
-                    "invalid TCP options length: {provided} bytes available, expected {expected} bytes (per data offset)"
-                )
-            }
-            ParseError::OptionsLengthTooLarge { provided, max } => {
-                write!(
-                    f,
-                    "invalid TCP options length: {provided} bytes available (expected range: 0..={max})"
+                    "invalid IPv4/TCP options length; {provided} bytes available, expected: {expected} bytes"
                 )
             }
         }
@@ -138,12 +131,12 @@ impl fmt::Display for ParseError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum HeaderError {
-    /// IPv4 payload length exceeds the maximum allowed size.
+    /// Invalid IPv4 payload length.
     PayloadTooLarge { provided: u16, max: u16 },
     /// Appending TCP option will exceed maximum allowed size.
-    OptionLengthExceeded { current: usize, max: usize },
+    TcpOptionLengthExceeded { current: usize, max: usize },
     /// Invalid TCP `MSS` option value.
-    InvalidMssOption,
+    InvalidTcpMssOption,
 }
 
 impl error::Error for HeaderError {}
@@ -154,16 +147,16 @@ impl fmt::Display for HeaderError {
             HeaderError::PayloadTooLarge { provided, max } => {
                 write!(
                     f,
-                    "invalid IPv4 payload length: {provided} bytes available (expected range: 0..={max})"
+                    "invalid IPv4 payload length; {provided} bytes available, expected: 0..={max}"
                 )
             }
-            HeaderError::OptionLengthExceeded { current, max } => {
+            HeaderError::TcpOptionLengthExceeded { current, max } => {
                 write!(
                     f,
-                    "TCP option space exceeded: {current} bytes used (appending would exceed maximum size: {max} bytes)"
+                    "TCP option space exceeded; {current} bytes used, appending would exceed maximum size: {max} bytes"
                 )
             }
-            HeaderError::InvalidMssOption => {
+            HeaderError::InvalidTcpMssOption => {
                 write!(f, "invalid TCP MSS option: value must be non-zero")
             }
         }
