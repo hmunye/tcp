@@ -1632,8 +1632,8 @@ pub fn log_segment(iph: &Ipv4Header, tcph: &TcpHeader, payload: &[u8]) {
         iph.protocol(),
         iph.header_checksum(),
         iph.is_valid_checksum(),
-        iph.src(),
-        iph.dst(),
+        iph.src_addr(),
+        iph.dst_addr(),
     );
 
     tcp_debug!(
