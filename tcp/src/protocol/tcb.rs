@@ -35,8 +35,7 @@ pub struct TCB {
     pub(crate) rcv_buf: Vec<u8>,
     /// Application data not yet transmitted (e.g., peer window closing).
     ///
-    /// TODO: Any data that could not be sent due to the peer window closing
-    /// should be buffered and attempted to be piggybacked on future ACKs.
+    /// TODO: Attempt to be piggyback buffered application data on future ACKs.
     pub(crate) snd_queue: VecDeque<Vec<u8>>,
     /// Out-of-order segments buffered by sequence number for in-order
     /// reassembly.
@@ -1408,9 +1407,8 @@ impl TCB {
 
     #[inline]
     #[must_use]
-    const fn generate_iss() -> u32 {
-        // TODO: Should be randomized instead. use `rand` crate.
-        0
+    fn generate_iss() -> u32 {
+        rand::random()
     }
 }
 
@@ -1500,7 +1498,7 @@ mod tests {
                 let (mut conn, _maybe_syn_ack) = create_syn_recv_tcb(isn.wrapping_sub(1), wnd);
 
                 let mut ack = TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, isn, wnd);
-                ack.set_ack_number(1);
+                ack.set_ack_number(conn.snd.iss + 1);
                 ack.set_ack();
 
                 // Transitions from `SYN_RECEIVED` -> `ESTABLISHED`...
@@ -1525,7 +1523,7 @@ mod tests {
                 let _ = conn.close().unwrap();
 
                 let mut ack = TcpHeader::new(TEST_SOCKET.dst.port, TEST_SOCKET.src.port, isn, wnd);
-                ack.set_ack_number(2);
+                ack.set_ack_number(conn.snd.iss + 2);
                 ack.set_ack();
 
                 // Transitions from `FIN_WAIT_1` -> `FIN_WAIT_2`...
@@ -1544,7 +1542,7 @@ mod tests {
                     isn.wrapping_sub(1),
                     wnd,
                 );
-                fin_ack.set_ack_number(1);
+                fin_ack.set_ack_number(conn.snd.iss + 1);
                 fin_ack.set_fin();
                 fin_ack.set_ack();
 
@@ -1564,7 +1562,7 @@ mod tests {
                     isn.wrapping_sub(1),
                     wnd,
                 );
-                fin_ack.set_ack_number(1);
+                fin_ack.set_ack_number(conn.snd.iss + 1);
                 fin_ack.set_fin();
                 fin_ack.set_ack();
 
@@ -1590,7 +1588,7 @@ mod tests {
                     isn.wrapping_sub(1),
                     wnd,
                 );
-                fin_ack.set_ack_number(2);
+                fin_ack.set_ack_number(conn.snd.iss + 2);
                 fin_ack.set_fin();
                 fin_ack.set_ack();
 
@@ -1608,7 +1606,29 @@ mod tests {
     /// Returns `true` if the sequence number provided is valid, assuming that
     /// the receive window is non-zero.
     const fn is_valid_seq(seqn: u32, seg_len: u32, rcv_nxt: u32, nxt_wnd: u32) -> bool {
-        // NOTE: For sequence number checking, only case 2 and 4 are covered.
+        // RFC 793, Section 3.9:
+        //
+        // SEGMENT ARRIVES
+        //
+        // There are four cases for the acceptability test for an incoming
+        // segment:
+        //
+        // ```
+        //    Segment Receive  Test
+        //    Length  Window
+        //    ------- -------  -------------------------------------------
+        //
+        //       0       0     SEG.SEQ = RCV.NXT
+        //
+        //       0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+        //
+        //      >0       0     not acceptable
+        //
+        //      >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
+        //                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
+        // ```
+        //
+        // Only case 2 and 4 are covered.
         if seg_len == 0 {
             is_between_wrapped(rcv_nxt.wrapping_sub(1), seqn, nxt_wnd)
         } else {
@@ -1700,6 +1720,8 @@ mod tests {
             let (mut conn, _syn) = TCB::active_open(TEST_SOCKET).unwrap();
             let _maybe_reply = conn.process_segment(&seg.iph, &seg.tcph, &seg.payload);
 
+            let iss = conn.snd.iss;
+
             match conn.state {
                 ConnectionState::SYN_SENT => {}
                 ConnectionState::SYN_RECEIVED => {
@@ -1717,13 +1739,13 @@ mod tests {
                     );
 
                     prop_assert_tcb!(&conn.snd,
-                        una: 0,
-                        nxt: 2, // Sent the previous SYN + SYN+ACK
+                        una: iss,
+                        nxt: iss.wrapping_add(2), // Previous SYN + SYN+ACK
                         wnd: seg.tcph.window(),
                         up: seg.tcph.urgent_pointer(),
                         wl1: 0,
                         wl2: 0,
-                        iss: 0
+                        iss: iss
                     );
 
                     prop_assert_tcb!(&conn.rcv,
@@ -1751,8 +1773,8 @@ mod tests {
                     );
 
                     prop_assert_tcb!(&conn.snd,
-                        una: 1, // ACKed the previous SYN
-                        nxt: 1,
+                        una: iss + 1, // ACKed the previous SYN
+                        nxt: iss + 1,
                         wnd: seg.tcph.window(),
                         up: seg.tcph.urgent_pointer(),
                         wl1: 0,
