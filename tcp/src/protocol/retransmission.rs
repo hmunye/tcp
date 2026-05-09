@@ -44,7 +44,7 @@ impl RetransmissionEntry {
     /// Returns the total sequence space occupied by the TCP segment, including
     /// `SYN`/`FIN` flags.
     #[inline]
-    pub const fn segment_len(&self) -> u32 {
+    pub fn segment_len(&self) -> u32 {
         self.segment.payload.len() as u32
             + self.segment.tcph.syn() as u32
             + self.segment.tcph.fin() as u32

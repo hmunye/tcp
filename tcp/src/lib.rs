@@ -38,6 +38,7 @@
 #![warn(rust_2018_idioms)]
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::collapsible_if)]
 
 // TODO: Implement limitations.
 //

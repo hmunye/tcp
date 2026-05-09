@@ -753,20 +753,22 @@ impl TCB {
                 self.state,
             );
         } else {
-            if let ConnectionState::SYN_RECEIVED = self.state
-                && let Some(seg) = self.process_syn_recv(ackn)?
-            {
-                return Ok(Some(seg));
+            if self.state == ConnectionState::SYN_RECEIVED {
+                if let Some(seg) = self.process_syn_recv(ackn)? {
+                    return Ok(Some(seg));
+                }
             }
 
-            if let ConnectionState::ESTABLISHED
-            | ConnectionState::FIN_WAIT_1
-            | ConnectionState::FIN_WAIT_2
-            | ConnectionState::CLOSE_WAIT
-            | ConnectionState::CLOSING
-            | ConnectionState::LAST_ACK
-            | ConnectionState::TIME_WAIT = self.state
-            {
+            if matches!(
+                self.state,
+                ConnectionState::ESTABLISHED
+                    | ConnectionState::FIN_WAIT_1
+                    | ConnectionState::FIN_WAIT_2
+                    | ConnectionState::CLOSE_WAIT
+                    | ConnectionState::CLOSING
+                    | ConnectionState::LAST_ACK
+                    | ConnectionState::TIME_WAIT
+            ) {
                 // RFC 793, Section 3.9:
                 //
                 // SEGMENT ARRIVES
@@ -925,10 +927,10 @@ impl TCB {
                 return Ok(Some(ack));
             }
 
-            if let ConnectionState::TIME_WAIT = self.state
-                && let Some(seg) = self.process_time_wait(tcph.fin())?
-            {
-                return Ok(Some(seg));
+            if self.state == ConnectionState::TIME_WAIT {
+                if let Some(seg) = self.process_time_wait(tcph.fin())? {
+                    return Ok(Some(seg));
+                }
             }
         }
 
