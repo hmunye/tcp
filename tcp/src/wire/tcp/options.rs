@@ -14,6 +14,7 @@ impl TcpOptions {
     pub const MAX_OPTIONS_LEN: usize = 40;
 
     /// Returns the `MSS` option value, or `None` if not present.
+    #[must_use]
     pub fn mss(&self) -> Option<u16> {
         let mut i = 0;
         let opts = self.as_slice();
@@ -58,18 +59,21 @@ impl TcpOptions {
 
     /// Returns the length of the `TcpOptions` in bytes.
     #[inline]
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.buf.len()
     }
 
     /// Returns `true` if no `TcpOptions` are present.
     #[inline]
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
     /// Returns a slice to the `TcpOptions`.
     #[inline]
+    #[must_use]
     pub const fn as_slice(&self) -> &[u8] {
         self.buf.as_slice()
     }

@@ -15,18 +15,21 @@ impl Ipv4Options {
 
     /// Returns the length of the `Ipv4Options` in bytes.
     #[inline]
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.buf.len()
     }
 
     /// Returns `true` if no `Ipv4Options` are present.
     #[inline]
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
     /// Returns a slice to the `Ipv4Options`.
     #[inline]
+    #[must_use]
     pub const fn as_slice(&self) -> &[u8] {
         self.buf.as_slice()
     }

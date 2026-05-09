@@ -168,24 +168,28 @@ impl TcpHeader {
 
     /// Returns the TCP `Source Port` field.
     #[inline]
+    #[must_use]
     pub const fn src_port(&self) -> u16 {
         self.src_port
     }
 
     /// Returns the TCP `Destination Port` field.
     #[inline]
+    #[must_use]
     pub const fn dst_port(&self) -> u16 {
         self.dst_port
     }
 
     /// Returns the TCP `Sequence Number` field.
     #[inline]
+    #[must_use]
     pub const fn seq_number(&self) -> u32 {
         self.seq_number
     }
 
     /// Returns the TCP `Acknowledgment Number` field.
     #[inline]
+    #[must_use]
     pub const fn ack_number(&self) -> u32 {
         self.ack_number
     }
@@ -198,14 +202,16 @@ impl TcpHeader {
 
     /// Returns the TCP `Data Offset` field.
     ///
-    /// To get the header length in bytes, use [TcpHeader::header_len].
+    /// To get the header length in bytes, use [`TcpHeader::header_len`].
     #[inline]
+    #[must_use]
     pub const fn data_offset(&self) -> u8 {
         (self.data_offset_and_flags >> 12) as u8
     }
 
     /// Returns `true` if the `URG` (Urgent) flag is set.
     #[inline]
+    #[must_use]
     pub const fn urg(&self) -> bool {
         (self.data_offset_and_flags >> 5) & 1 == 1
     }
@@ -218,6 +224,7 @@ impl TcpHeader {
 
     /// Returns `true` if the `ACK` (Acknowledgment) flag is set.
     #[inline]
+    #[must_use]
     pub const fn ack(&self) -> bool {
         (self.data_offset_and_flags >> 4) & 1 == 1
     }
@@ -230,6 +237,7 @@ impl TcpHeader {
 
     /// Returns `true` if the `PSH` (Push) flag is set.
     #[inline]
+    #[must_use]
     pub const fn psh(&self) -> bool {
         (self.data_offset_and_flags >> 3) & 1 == 1
     }
@@ -242,6 +250,7 @@ impl TcpHeader {
 
     /// Returns `true` if the `RST` (Reset) flag is set.
     #[inline]
+    #[must_use]
     pub const fn rst(&self) -> bool {
         (self.data_offset_and_flags >> 2) & 1 == 1
     }
@@ -254,6 +263,7 @@ impl TcpHeader {
 
     /// Returns `true` if the `SYN` (Synchronize) flag is set.
     #[inline]
+    #[must_use]
     pub const fn syn(&self) -> bool {
         (self.data_offset_and_flags >> 1) & 1 == 1
     }
@@ -266,6 +276,7 @@ impl TcpHeader {
 
     /// Returns `true` if the `FIN` (Finish) flag is set.
     #[inline]
+    #[must_use]
     pub const fn fin(&self) -> bool {
         self.data_offset_and_flags & 1 == 1
     }
@@ -278,12 +289,14 @@ impl TcpHeader {
 
     /// Returns the TCP `Window` field.
     #[inline]
+    #[must_use]
     pub const fn window(&self) -> u16 {
         self.window
     }
 
     /// Returns the TCP `Checksum` field.
     #[inline]
+    #[must_use]
     pub const fn checksum(&self) -> u16 {
         self.checksum
     }
@@ -326,24 +339,28 @@ impl TcpHeader {
 
     /// Returns `true` if the TCP `Checksum` field is valid.
     #[inline]
+    #[must_use]
     pub fn is_valid_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> bool {
         self.checksum == self.compute_checksum(ip_header, payload)
     }
 
     /// Returns the TCP `Urgent Pointer` field.
     #[inline]
+    #[must_use]
     pub const fn urgent_pointer(&self) -> u16 {
         self.urg_pointer
     }
 
     /// Returns a reference to the `TcpOptions`.
     #[inline]
+    #[must_use]
     pub const fn options(&self) -> &TcpOptions {
         &self.options
     }
 
     /// Returns the length of the header in bytes (including options).
     #[inline]
+    #[must_use]
     pub const fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN + self.options.len()
     }
@@ -361,10 +378,10 @@ impl TcpHeader {
     pub fn set_option_mss(&mut self, mss: u16) -> Result<()> {
         self.options.set_mss(mss)?;
 
-        let new_data_offset = ((TcpOptions::MSS_LEN >> 2) as u8 + self.data_offset()) as u16;
+        let new_data_offset = u16::from((TcpOptions::MSS_LEN >> 2) as u8 + self.data_offset());
 
         debug_assert!(
-            new_data_offset <= Self::MAX_DATA_OFFSET as u16,
+            new_data_offset <= u16::from(Self::MAX_DATA_OFFSET),
             "header length overflow appending MSS; new_data_offset: {new_data_offset}, maximum data_offset: {}",
             Self::MAX_DATA_OFFSET
         );
@@ -392,6 +409,7 @@ impl TcpHeader {
     /// let bytes = buf.as_slice();
     /// ```
     #[inline]
+    #[must_use]
     pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
         let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
 
@@ -557,7 +575,7 @@ impl TcpHeader {
                 }
             };
 
-            sum += word as u32;
+            sum += u32::from(word);
 
             // Handle potential overflow with carry folding.
             if sum > 0xFFFF {
@@ -596,7 +614,7 @@ impl TryFrom<&[u8]> for TcpHeader {
 
         if data_offset < Self::MIN_DATA_OFFSET {
             return Err(Error::Parse(ParseError::InvalidDataOffset {
-                provided: data_offset as u16,
+                provided: u16::from(data_offset),
                 min: Self::MIN_DATA_OFFSET,
                 max: Self::MAX_DATA_OFFSET,
             }));
@@ -684,7 +702,7 @@ mod tests {
 
         assert_eq!(header.src_port(), 40982);
         assert_eq!(header.dst_port(), 443);
-        assert_eq!(header.seq_number(), 3166393512);
+        assert_eq!(header.seq_number(), 3_166_393_512);
         assert_eq!(header.ack_number(), 0);
         assert_eq!(header.data_offset(), 10);
         assert!(!header.urg());
@@ -716,7 +734,7 @@ mod tests {
 
         assert_eq!(header.src_port(), 40982);
         assert_eq!(header.dst_port(), 443);
-        assert_eq!(header.seq_number(), 3166393512);
+        assert_eq!(header.seq_number(), 3_166_393_512);
         assert_eq!(header.ack_number(), 0);
         assert_eq!(header.data_offset(), 10);
         assert!(!header.urg());
@@ -739,7 +757,7 @@ mod tests {
 
         assert_eq!(header.src_port(), 40982);
         assert_eq!(header.dst_port(), 443);
-        assert_eq!(header.seq_number(), 3166393512);
+        assert_eq!(header.seq_number(), 3_166_393_512);
         assert_eq!(header.ack_number(), 0);
         assert_eq!(header.data_offset(), 10);
         assert!(!header.urg());
@@ -789,7 +807,7 @@ mod tests {
     fn test_tcp_header_control_bits() {
         // Check if all permutations of `URG`, `ACK`, `PSH`, `RST`, `SYN`, and
         // `FIN` bits can be parsed.
-        for flags in 0u8..=0b00111111 {
+        for flags in 0u8..=0b0011_1111 {
             let mut header_bytes: [u8; 40] = [
                 0xa0, 0x16, 0x01, 0xbb, 0xbc, 0xbb, 0x54, 0xa8, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x00,
                 0xfa, 0xf0, 0xbb, 0x4c, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a,
@@ -804,39 +822,33 @@ mod tests {
 
             assert_eq!(
                 header.urg(),
-                (flags & 0b00100000) != 0,
-                "URG failed for {:06b}",
-                flags
+                (flags & 0b0010_0000) != 0,
+                "URG failed for {flags:06b}"
             );
             assert_eq!(
                 header.ack(),
-                (flags & 0b00010000) != 0,
-                "ACK failed for {:06b}",
-                flags
+                (flags & 0b0001_0000) != 0,
+                "ACK failed for {flags:06b}"
             );
             assert_eq!(
                 header.psh(),
-                (flags & 0b00001000) != 0,
-                "PSH failed for {:06b}",
-                flags
+                (flags & 0b0000_1000) != 0,
+                "PSH failed for {flags:06b}"
             );
             assert_eq!(
                 header.rst(),
-                (flags & 0b00000100) != 0,
-                "RST failed for {:06b}",
-                flags
+                (flags & 0b0000_0100) != 0,
+                "RST failed for {flags:06b}"
             );
             assert_eq!(
                 header.syn(),
-                (flags & 0b00000010) != 0,
-                "SYN failed for {:06b}",
-                flags
+                (flags & 0b0000_0010) != 0,
+                "SYN failed for {flags:06b}"
             );
             assert_eq!(
                 header.fin(),
-                (flags & 0b00000001) != 0,
-                "FIN failed for {:06b}",
-                flags
+                (flags & 0b0000_0001) != 0,
+                "FIN failed for {flags:06b}"
             );
         }
     }
@@ -950,8 +962,7 @@ mod tests {
                 header,
                 Err(Error::Parse(ParseError::InvalidBufferLength { .. }))
             ),
-            "expected error: `InvalidBufferLength`, got: {:?}",
-            header
+            "expected error: `InvalidBufferLength`, got: {header:?}"
         );
     }
 
@@ -968,8 +979,7 @@ mod tests {
                 header,
                 Err(Error::Parse(ParseError::InvalidDataOffset { .. }))
             ),
-            "expected error: `InvalidDataOffset`, got: {:?}",
-            header
+            "expected error: `InvalidDataOffset`, got: {header:?}"
         );
     }
 }

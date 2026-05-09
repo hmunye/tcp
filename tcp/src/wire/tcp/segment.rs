@@ -51,6 +51,7 @@ impl TcpSegment {
     /// let bytes = seg.to_bytes();
     /// ```
     #[inline]
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf =
             Vec::with_capacity(self.iph.header_len() + self.tcph.header_len() + self.payload.len());

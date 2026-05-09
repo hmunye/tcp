@@ -11,38 +11,43 @@ pub struct FixedBuf<const N: usize> {
 impl<const N: usize> FixedBuf<N> {
     /// Returns a slice to the initialized portion of this `FixedBuf`.
     #[inline]
+    #[must_use]
     pub const fn as_slice(&self) -> &[u8] {
         // SAFETY: `0..self.initialized` contains only initialized bytes.
-        unsafe { std::slice::from_raw_parts(self.buf.as_ptr() as *const _, self.initialized) }
+        unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast(), self.initialized) }
     }
 
     /// Returns a mutable slice to the initialized portion of this `FixedBuf`.
     #[inline]
     pub const fn as_slice_mut(&mut self) -> &mut [u8] {
         // SAFETY: `0..self.initialized` contains only initialized bytes.
-        unsafe { std::slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut _, self.initialized) }
+        unsafe { std::slice::from_raw_parts_mut(self.buf.as_mut_ptr().cast(), self.initialized) }
     }
 
     /// Returns the number of initialized bytes.
     #[inline]
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.initialized
     }
 
     /// Returns `true` if the buffer contains no initialized bytes.
     #[inline]
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.initialized == 0
     }
 
     /// Returns the compile-time capacity of this `FixedBuf`.
     #[inline]
+    #[must_use]
     pub const fn capacity(&self) -> usize {
         N
     }
 
     /// Returns the number of uninitialized bytes remaining.
     #[inline]
+    #[must_use]
     pub const fn remaining(&self) -> usize {
         self.capacity() - self.initialized
     }

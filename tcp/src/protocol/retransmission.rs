@@ -41,15 +41,6 @@ impl RetransmissionEntry {
         Duration::from_secs(Self::RTO * (1 << self.transmit_count))
     }
 
-    /// Returns the total sequence space occupied by the TCP segment, including
-    /// `SYN`/`FIN` flags.
-    #[inline]
-    pub fn segment_len(&self) -> u32 {
-        self.segment.payload.len() as u32
-            + self.segment.tcph.syn() as u32
-            + self.segment.tcph.fin() as u32
-    }
-
     /// Returns `true` if the peer has fully acknowledged this TCP segment.
     #[inline]
     pub const fn is_acked(&self, segment_len: u32, una: u32) -> bool {

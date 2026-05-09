@@ -219,6 +219,7 @@ impl Ipv4Header {
 
     /// Returns the IPv4 `Version` field.
     #[inline]
+    #[must_use]
     pub const fn version(&self) -> u8 {
         self.version_ihl >> 4
     }
@@ -227,30 +228,35 @@ impl Ipv4Header {
     ///
     /// To get the header length in bytes, use [`Ipv4Header::header_len`].
     #[inline]
+    #[must_use]
     pub const fn ihl(&self) -> u8 {
         self.version_ihl & 0xF
     }
 
     /// Returns the IPv4 `Type of Service` field.
     #[inline]
+    #[must_use]
     pub const fn tos(&self) -> u8 {
         self.tos
     }
 
     /// Returns the IPv4 `Total Length` field.
     #[inline]
+    #[must_use]
     pub const fn total_length(&self) -> u16 {
         self.total_length
     }
 
     /// Returns the IPv4 `Identification` field.
     #[inline]
+    #[must_use]
     pub const fn id(&self) -> u16 {
         self.id
     }
 
     /// Returns `true` if the `DF` (Don't Fragment) flag is set.
     #[inline]
+    #[must_use]
     pub const fn dont_fragment(&self) -> bool {
         (self.flags_and_offset >> 14) & 1 == 1
     }
@@ -258,11 +264,12 @@ impl Ipv4Header {
     /// Sets the `DF` (Don't Fragment) flag.
     #[inline]
     pub const fn set_dont_fragment(&mut self) {
-        self.flags_and_offset |= 1 << 14
+        self.flags_and_offset |= 1 << 14;
     }
 
     /// Returns `true` if the `MF` (More Fragments) flag is set.
     #[inline]
+    #[must_use]
     pub const fn more_fragments(&self) -> bool {
         (self.flags_and_offset >> 13) & 1 == 1
     }
@@ -270,29 +277,33 @@ impl Ipv4Header {
     /// Sets the `MF` (More Fragment) flag.
     #[inline]
     pub const fn set_more_fragments(&mut self) {
-        self.flags_and_offset |= 1 << 13
+        self.flags_and_offset |= 1 << 13;
     }
 
     /// Returns the IPv4 `Fragment Offset` field.
     #[inline]
+    #[must_use]
     pub const fn fragment_offset(&self) -> u16 {
         self.flags_and_offset & 0x1FFF
     }
 
     /// Returns the IPv4 `Time to Live` field.
     #[inline]
+    #[must_use]
     pub const fn ttl(&self) -> u8 {
         self.ttl
     }
 
     /// Returns the IPv4 `Protocol` field.
     #[inline]
+    #[must_use]
     pub const fn protocol(&self) -> Protocol {
         self.protocol
     }
 
     /// Returns the IPv4 `Header Checksum` field.
     #[inline]
+    #[must_use]
     pub const fn header_checksum(&self) -> u16 {
         self.header_checksum
     }
@@ -332,30 +343,35 @@ impl Ipv4Header {
 
     /// Returns `true` if the IPv4 `Header Checksum` field is valid.
     #[inline]
+    #[must_use]
     pub fn is_valid_checksum(&self) -> bool {
         self.header_checksum == self.compute_header_checksum()
     }
 
     /// Returns the IPv4 `Source Address` field.
     #[inline]
+    #[must_use]
     pub const fn src_addr(&self) -> [u8; 4] {
         self.src_addr
     }
 
     /// Returns the IPv4 `Destination Address` field.
     #[inline]
+    #[must_use]
     pub const fn dst_addr(&self) -> [u8; 4] {
         self.dst_addr
     }
 
     /// Returns a reference to the `Ipv4Options`.
     #[inline]
+    #[must_use]
     pub const fn options(&self) -> &Ipv4Options {
         &self.options
     }
 
     /// Returns the payload length (excluding header).
     #[inline]
+    #[must_use]
     pub const fn payload_len(&self) -> u16 {
         self.total_length - self.header_len() as u16
     }
@@ -374,6 +390,7 @@ impl Ipv4Header {
 
     /// Returns the length of the header in bytes (including options).
     #[inline]
+    #[must_use]
     pub const fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN + self.options.len()
     }
@@ -401,6 +418,7 @@ impl Ipv4Header {
     /// let bytes = buf.as_slice();
     /// ```
     #[inline]
+    #[must_use]
     pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
         let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
 
@@ -520,7 +538,7 @@ impl Ipv4Header {
         for i in (0..header_bytes.len()).step_by(2) {
             let word = u16::from_be_bytes([header_bytes[i], header_bytes[i + 1]]);
 
-            sum += word as u32;
+            sum += u32::from(word);
 
             // Handle potential overflow with carry folding.
             if sum > 0xFFFF {
@@ -542,10 +560,12 @@ impl Ipv4Header {
     fn compute_total_length(&self, payload_len: u16) -> Result<u16> {
         (self.header_len() as u16)
             .checked_add(payload_len)
-            .ok_or(Error::Header(HeaderError::PayloadTooLarge {
-                provided: payload_len,
-                max: self.max_payload_len(),
-            }))
+            .ok_or_else(|| {
+                Error::Header(HeaderError::PayloadTooLarge {
+                    provided: payload_len,
+                    max: self.max_payload_len(),
+                })
+            })
     }
 
     #[inline]
@@ -779,15 +799,13 @@ mod tests {
 
             assert_eq!(
                 header.dont_fragment(),
-                (flags & 0b01000000) != 0,
-                "DF failed for {:06b}",
-                flags
+                (flags & 0b0100_0000) != 0,
+                "DF failed for {flags:06b}"
             );
             assert_eq!(
                 header.more_fragments(),
-                (flags & 0b00100000) != 0,
-                "MF failed for {:06b}",
-                flags
+                (flags & 0b0010_0000) != 0,
+                "MF failed for {flags:06b}"
             );
         }
     }
@@ -851,8 +869,7 @@ mod tests {
                 header,
                 Err(Error::Parse(ParseError::InvalidBufferLength { .. }))
             ),
-            "expected error: `InvalidBufferLength`, got: {:?}",
-            header
+            "expected error: `InvalidBufferLength`, got: {header:?}"
         );
     }
 
@@ -866,8 +883,7 @@ mod tests {
         let header = Ipv4Header::try_from(&header_bytes[..]);
         assert!(
             matches!(header, Err(Error::Parse(ParseError::InvalidVersion { .. }))),
-            "expected error: `InvalidVersion`, got: {:?}",
-            header
+            "expected error: `InvalidVersion`, got: {header:?}"
         );
     }
 
@@ -881,8 +897,7 @@ mod tests {
         let header = Ipv4Header::try_from(&header_bytes[..]);
         assert!(
             matches!(header, Err(Error::Parse(ParseError::InvalidIhl { .. }))),
-            "expected error: `InvalidIhl`, got: {:?}",
-            header
+            "expected error: `InvalidIhl`, got: {header:?}"
         );
     }
 
@@ -899,8 +914,7 @@ mod tests {
                 header,
                 Err(Error::Parse(ParseError::InvalidTotalLength { .. }))
             ),
-            "expected error: `InvalidTotalLength`, got: {:?}",
-            header
+            "expected error: `InvalidTotalLength`, got: {header:?}"
         );
     }
 }

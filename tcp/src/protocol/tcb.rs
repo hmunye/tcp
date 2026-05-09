@@ -120,7 +120,7 @@ impl fmt::Debug for ConnectionState {
 ///
 /// [(RFC 793, Section 3.2)]: https://www.rfc-editor.org/rfc/rfc793#section-3.2
 #[derive(Debug)]
-pub(crate) struct SndSeqSpace {
+pub struct SndSeqSpace {
     /// SND.UNA - send unacknowledged
     pub(crate) una: u32,
     /// SND.NXT - send next
@@ -153,7 +153,7 @@ pub(crate) struct SndSeqSpace {
 ///
 /// [(RFC 793, Section 3.2)]: https://www.rfc-editor.org/rfc/rfc793#section-3.2
 #[derive(Debug)]
-pub(crate) struct RcvSeqSpace {
+pub struct RcvSeqSpace {
     /// RCV.NXT - receive next
     pub(crate) nxt: u32,
     /// RCV.WND - receive window
@@ -423,7 +423,7 @@ impl TCB {
                         psh_acks.push_back(ack);
 
                         pos += self.snd.wnd as usize;
-                        self.snd.nxt = self.snd.nxt.wrapping_add(self.snd.wnd as u32);
+                        self.snd.nxt = self.snd.nxt.wrapping_add(u32::from(self.snd.wnd));
                         self.snd.wnd = 0;
 
                         let slice = &buf[pos..];
@@ -697,7 +697,7 @@ impl TCB {
         payload: &[u8],
     ) -> Result<Option<TcpSegment>> {
         #[allow(unused_variables)]
-        let _iph = iph;
+        let iph_ = iph;
 
         // if let ConnectionState::CLOSED = self.state {
         //     return Err(Error::Io(io::Error::new(
@@ -706,14 +706,14 @@ impl TCB {
         //     )));
         // }
 
-        tcp_log_segment!(_iph, tcph, payload);
+        tcp_log_segment!(iph_, tcph, payload);
 
-        if let ConnectionState::SYN_SENT = self.state {
+        if self.state == ConnectionState::SYN_SENT {
             return self.process_syn_sent(tcph);
         }
 
         // Sequence space occupied by TCP segment, including `SYN`/`FIN` flags.
-        let seg_len = payload.len() as u32 + tcph.syn() as u32 + tcph.fin() as u32;
+        let seg_len = tcp_segment_len(payload, tcph.syn(), tcph.fin());
 
         let seqn = tcph.seq_number();
         let ackn = tcph.ack_number();
@@ -752,185 +752,187 @@ impl TCB {
                 self.sock,
                 self.state,
             );
-        } else {
-            if self.state == ConnectionState::SYN_RECEIVED {
-                if let Some(seg) = self.process_syn_recv(ackn)? {
-                    return Ok(Some(seg));
+
+            return Ok(None);
+        }
+
+        if self.state == ConnectionState::SYN_RECEIVED {
+            if let Some(seg) = self.process_syn_recv(ackn)? {
+                return Ok(Some(seg));
+            }
+        }
+
+        if matches!(
+            self.state,
+            ConnectionState::ESTABLISHED
+                | ConnectionState::FIN_WAIT_1
+                | ConnectionState::FIN_WAIT_2
+                | ConnectionState::CLOSE_WAIT
+                | ConnectionState::CLOSING
+                | ConnectionState::LAST_ACK
+                | ConnectionState::TIME_WAIT
+        ) {
+            // RFC 793, Section 3.9:
+            //
+            // SEGMENT ARRIVES
+            //
+            // If SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <- SEG.ACK.
+            // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be
+            // ignored. If the ACK acks something not yet sent
+            // (SEG.ACK > SND.NXT) then send an ACK, drop the segment, and
+            // return.
+            //
+            // If SND.UNA < SEG.ACK =< SND.NXT, the send window should be
+            // updated. If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and
+            // SND.WL2 =< SEG.ACK)), set SND.WND <- SEG.WND, set
+            // SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK.
+            if ackn <= self.snd.una {
+                tcp_warn!(
+                    "[{}] ({:?}) received duplicate ACK `{ackn}`: ignoring",
+                    self.sock,
+                    self.state
+                );
+
+                return Ok(None);
+            } else if ackn > self.snd.nxt {
+                let ack = segment_builders::ack(self, &[])?;
+
+                tcp_warn!(
+                    "[{}] ({:?}) received ACK `{ackn}` for data not transmitted: constructed ACK",
+                    self.sock,
+                    self.state
+                );
+
+                return Ok(Some(ack));
+            } else {
+                self.snd.una = ackn;
+
+                if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn) {
+                    self.snd.wnd = tcph.window();
+                    self.snd.wl1 = seqn;
+                    self.snd.wl2 = ackn;
+
+                    tcp_debug!(
+                        "[{}] ({:?}) updated snd window size: {}",
+                        self.sock,
+                        self.state,
+                        self.snd.wnd
+                    );
                 }
             }
 
-            if matches!(
-                self.state,
+            match self.state {
                 ConnectionState::ESTABLISHED
-                    | ConnectionState::FIN_WAIT_1
-                    | ConnectionState::FIN_WAIT_2
-                    | ConnectionState::CLOSE_WAIT
-                    | ConnectionState::CLOSING
-                    | ConnectionState::LAST_ACK
-                    | ConnectionState::TIME_WAIT
-            ) {
-                // RFC 793, Section 3.9:
+                | ConnectionState::CLOSE_WAIT
+                | ConnectionState::TIME_WAIT
+                // FIN-WAIT-2 STATE
                 //
-                // SEGMENT ARRIVES
-                //
-                // If SND.UNA < SEG.ACK =< SND.NXT then, set SND.UNA <- SEG.ACK.
-                // If the ACK is a duplicate (SEG.ACK < SND.UNA), it can be
-                // ignored. If the ACK acks something not yet sent
-                // (SEG.ACK > SND.NXT) then send an ACK, drop the segment, and
-                // return.
-                //
-                // If SND.UNA < SEG.ACK =< SND.NXT, the send window should be
-                // updated. If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and
-                // SND.WL2 =< SEG.ACK)), set SND.WND <- SEG.WND, set
-                // SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK.
-                if ackn <= self.snd.una {
-                    tcp_warn!(
-                        "[{}] ({:?}) received duplicate ACK `{ackn}`: ignoring",
-                        self.sock,
-                        self.state
+                // In addition to the processing for the ESTABLISHED state,
+                // if the retransmission queue is empty, the user's CLOSE
+                // can be acknowledged ("ok") but do not delete the TCB.
+                | ConnectionState::FIN_WAIT_2 => {}
+                ConnectionState::FIN_WAIT_1 => {
+                    tcp_debug!(
+                        "[{}] (FIN_WAIT_1) received ACK for FIN: FIN_WAIT_1 -> FIN_WAIT_2",
+                        self.sock
                     );
 
+                    self.state = ConnectionState::FIN_WAIT_2;
+                }
+                ConnectionState::CLOSING => {
+                    tcp_debug!(
+                        "[{}] (CLOSING) received ACK for FIN: CLOSING -> TIME_WAIT",
+                        self.sock
+                    );
+
+                    self.time_wait = Instant::now();
+                    self.state = ConnectionState::TIME_WAIT;
+                }
+                ConnectionState::LAST_ACK => {
+                    tcp_warn!(
+                        "[{}] (LAST_ACK) received ACK for FIN: LAST_ACK -> CLOSED",
+                        self.sock
+                    );
+
+                    self.state = ConnectionState::CLOSED;
                     return Ok(None);
-                } else if ackn > self.snd.nxt {
-                    let ack = segment_builders::ack(self, &[])?;
+                }
+                _ => unreachable!(),
+            }
+        }
 
-                    tcp_warn!(
-                        "[{}] ({:?}) received ACK `{ackn}` for data not transmitted: constructed ACK",
-                        self.sock,
-                        self.state
-                    );
+        if matches!(
+            self.state,
+            ConnectionState::ESTABLISHED
+                | ConnectionState::FIN_WAIT_1
+                | ConnectionState::FIN_WAIT_2
+        ) && seg_len > 0
+        {
+            self.process_segment_text(seqn, payload);
 
-                    return Ok(Some(ack));
-                } else {
-                    self.snd.una = ackn;
+            if tcph.fin() {
+                // Accounting for the peer's FIN.
+                self.rcv.nxt = self.rcv.nxt.wrapping_add(1);
 
-                    if self.snd.wl1 < seqn || (self.snd.wl1 == seqn && self.snd.wl2 <= ackn) {
-                        self.snd.wnd = tcph.window();
-                        self.snd.wl1 = seqn;
-                        self.snd.wl2 = ackn;
+                // Peer signaled end-of-transmission; drain contiguous
+                // buffered segments for delivery.
+                for (seq, mut data) in mem::take(&mut self.reassembly_map) {
+                    if seq == self.rcv.nxt {
+                        let len = data.len();
 
-                        tcp_debug!(
-                            "[{}] ({:?}) updated snd window size: {}",
-                            self.sock,
-                            self.state,
-                            self.snd.wnd
-                        );
+                        self.rcv_buf.append(&mut data);
+                        self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
+                        self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
                     }
                 }
 
                 match self.state {
-                    ConnectionState::ESTABLISHED
-                    | ConnectionState::CLOSE_WAIT
-                    | ConnectionState::TIME_WAIT => {}
-                    ConnectionState::FIN_WAIT_1 => {
+                    ConnectionState::ESTABLISHED => {
                         tcp_debug!(
-                            "[{}] (FIN_WAIT_1) received ACK for FIN: FIN_WAIT_1 -> FIN_WAIT_2",
+                            "[{}] (ESTABLISHED) received FIN with valid ACK: ESTABLISHED -> CLOSE_WAIT",
                             self.sock
                         );
 
-                        self.state = ConnectionState::FIN_WAIT_2;
+                        self.state = ConnectionState::CLOSE_WAIT;
                     }
-                    // FIN-WAIT-2 STATE
-                    //
-                    // In addition to the processing for the ESTABLISHED state,
-                    // if the retransmission queue is empty, the user's CLOSE
-                    // can be acknowledged ("ok") but do not delete the TCB.
-                    ConnectionState::FIN_WAIT_2 => {}
-                    ConnectionState::CLOSING => {
+                    // Unreachable under normal RFC 793 flow
+                    // (FIN_WAIT_1 -> FIN_WAIT_2 on ACK). Kept as a
+                    // fallback.
+                    ConnectionState::FIN_WAIT_1 => {
                         tcp_debug!(
-                            "[{}] (CLOSING) received ACK for FIN: CLOSING -> TIME_WAIT",
+                            "[{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
+                            self.sock
+                        );
+
+                        self.state = ConnectionState::CLOSING;
+                    }
+                    ConnectionState::FIN_WAIT_2 => {
+                        tcp_debug!(
+                            "[{}] (FIN_WAIT_2) received FIN: FIN_WAIT_2 -> TIME_WAIT",
                             self.sock
                         );
 
                         self.time_wait = Instant::now();
                         self.state = ConnectionState::TIME_WAIT;
                     }
-                    ConnectionState::LAST_ACK => {
-                        tcp_warn!(
-                            "[{}] (LAST_ACK) received ACK for FIN: LAST_ACK -> CLOSED",
-                            self.sock
-                        );
-
-                        self.state = ConnectionState::CLOSED;
-                        return Ok(None);
-                    }
                     _ => unreachable!(),
                 }
             }
 
-            if matches!(
+            let ack = segment_builders::ack(self, &[])?;
+
+            tcp_debug!(
+                "[{}] ({:?}) received segment data: constructed ACK",
+                self.sock,
                 self.state,
-                ConnectionState::ESTABLISHED
-                    | ConnectionState::FIN_WAIT_1
-                    | ConnectionState::FIN_WAIT_2
-            ) && seg_len > 0
-            {
-                self.process_segment_text(seqn, payload);
+            );
 
-                if tcph.fin() {
-                    // Accounting for the peer's FIN.
-                    self.rcv.nxt = self.rcv.nxt.wrapping_add(1);
+            return Ok(Some(ack));
+        }
 
-                    // Peer signaled end-of-transmission; drain contiguous
-                    // buffered segments for delivery.
-                    for (seq, mut data) in mem::take(&mut self.reassembly_map) {
-                        if seq == self.rcv.nxt {
-                            let len = data.len();
-
-                            self.rcv_buf.append(&mut data);
-                            self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
-                            self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
-                        }
-                    }
-
-                    match self.state {
-                        ConnectionState::ESTABLISHED => {
-                            tcp_debug!(
-                                "[{}] (ESTABLISHED) received FIN with valid ACK: ESTABLISHED -> CLOSE_WAIT",
-                                self.sock
-                            );
-
-                            self.state = ConnectionState::CLOSE_WAIT;
-                        }
-                        // Unreachable under normal RFC 793 flow
-                        // (FIN_WAIT_1 -> FIN_WAIT_2 on ACK). Kept as a
-                        // fallback.
-                        ConnectionState::FIN_WAIT_1 => {
-                            tcp_debug!(
-                                "[{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
-                                self.sock
-                            );
-
-                            self.state = ConnectionState::CLOSING;
-                        }
-                        ConnectionState::FIN_WAIT_2 => {
-                            tcp_debug!(
-                                "[{}] (FIN_WAIT_2) received FIN: FIN_WAIT_2 -> TIME_WAIT",
-                                self.sock
-                            );
-
-                            self.time_wait = Instant::now();
-                            self.state = ConnectionState::TIME_WAIT;
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-
-                let ack = segment_builders::ack(self, &[])?;
-
-                tcp_debug!(
-                    "[{}] ({:?}) received segment data: constructed ACK",
-                    self.sock,
-                    self.state,
-                );
-
-                return Ok(Some(ack));
-            }
-
-            if self.state == ConnectionState::TIME_WAIT {
-                if let Some(seg) = self.process_time_wait(tcph.fin())? {
-                    return Ok(Some(seg));
-                }
+        if self.state == ConnectionState::TIME_WAIT {
+            if let Some(seg) = self.process_time_wait(tcph.fin())? {
+                return Ok(Some(seg));
             }
         }
 
@@ -945,6 +947,10 @@ impl TCB {
     /// If the connection state transitions to `CLOSED`, `self` can be safely
     /// dropped by the caller. In that case, the returned `RST` segment should
     /// first be transmitted to the peer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the RST segment could not be created.
     #[inline]
     pub fn process_retransmissions(&mut self) -> Option<(Duration, VecDeque<TcpSegment>)> {
         if !self.retransmit_queue.is_empty() {
@@ -952,7 +958,11 @@ impl TCB {
             let mut nearest_timer = Duration::MAX;
 
             self.retransmit_queue.retain_mut(|retransmit| {
-                let seg_len = retransmit.segment_len();
+                let seg_len = tcp_segment_len(
+                    &retransmit.segment.payload,
+                    retransmit.segment.tcph.syn(),
+                    retransmit.segment.tcph.fin(),
+                );
                 let effective_rto = retransmit.effective_rto();
 
                 if retransmit.is_acked(seg_len, self.snd.una) {
@@ -990,6 +1000,7 @@ impl TCB {
                     }
                 } else {
                     // Peer still has time to acknowledge the segment.
+                    #[allow(clippy::unchecked_time_subtraction)]
                     let remaining = effective_rto - retransmit.timer.elapsed();
 
                     if remaining < nearest_timer {
@@ -1265,7 +1276,7 @@ impl TCB {
         //                  or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
         // ```
 
-        let nxt_wnd = self.rcv.nxt.wrapping_add(self.rcv.wnd as u32);
+        let nxt_wnd = self.rcv.nxt.wrapping_add(u32::from(self.rcv.wnd));
 
         let is_invalid = match (seg_len, self.rcv.wnd) {
             // Case 1: SEG.SEQ = RCV.NXT
@@ -1291,10 +1302,10 @@ impl TCB {
         };
 
         if is_invalid {
-            let ack = if !rst {
-                Some(segment_builders::ack(self, &[])?)
-            } else {
+            let ack = if rst {
                 None
+            } else {
+                Some(segment_builders::ack(self, &[])?)
             };
 
             tcp_warn!(
@@ -1397,10 +1408,18 @@ impl TCB {
 
     #[inline]
     #[must_use]
-    fn generate_iss() -> u32 {
+    const fn generate_iss() -> u32 {
         // TODO: Should be randomized instead. use `rand` crate.
         0
     }
+}
+
+/// Returns the total sequence space occupied by the TCP segment, including
+/// `SYN`/`FIN` flags.
+#[inline]
+#[allow(clippy::missing_const_for_fn)] // MSRV 1.85
+pub fn tcp_segment_len(payload: &[u8], syn: bool, fin: bool) -> u32 {
+    payload.len() as u32 + u32::from(syn) + u32::from(fin)
 }
 
 /// Returns `true` is the value `x` is in between the values `start` and `end`,
@@ -1582,13 +1601,13 @@ mod tests {
 
                 (conn, maybe_ack)
             }
-            _ => panic!("unable to generate TCB in {:?} state", state),
+            _ => panic!("unable to generate TCB in {state:?} state"),
         }
     }
 
     /// Returns `true` if the sequence number provided is valid, assuming that
     /// the receive window is non-zero.
-    fn is_valid_seq(seqn: u32, seg_len: u32, rcv_nxt: u32, nxt_wnd: u32) -> bool {
+    const fn is_valid_seq(seqn: u32, seg_len: u32, rcv_nxt: u32, nxt_wnd: u32) -> bool {
         // NOTE: For sequence number checking, only case 2 and 4 are covered.
         if seg_len == 0 {
             is_between_wrapped(rcv_nxt.wrapping_sub(1), seqn, nxt_wnd)
@@ -1750,21 +1769,22 @@ mod tests {
                 }
                 ConnectionState::CLOSED => {
                     // Either invalid ACK with no RST, or valid ACK+RST.
-                    if !seg.tcph.rst() {
-                        prop_assert!(seg.tcph.ack(),
-                            "segment with at least ACK (invalid) could transition from SYN_SENT -> CLOSED"
-                        );
-                        prop_assert_ne!(seg.tcph.ack_number(), conn.snd.iss + 1,
-                            "SYN should not be acknowledged in transition from SYN_SENT -> CLOSED"
-                        );
-                    } else {
+                    if seg.tcph.rst() {
                         prop_assert!(seg.tcph.ack() && seg.tcph.rst(),
                             "segment with at least ACK+RST (valid) could transition from SYN_SENT -> CLOSED"
                         );
                         prop_assert_eq!(seg.tcph.ack_number(), conn.snd.iss + 1,
                             "SYN should be acknowledged in transition from SYN_SENT -> CLOSED"
                         );
+                    } else {
+                        prop_assert!(seg.tcph.ack(),
+                            "segment with at least ACK (invalid) could transition from SYN_SENT -> CLOSED"
+                        );
+                        prop_assert_ne!(seg.tcph.ack_number(), conn.snd.iss + 1,
+                            "SYN should not be acknowledged in transition from SYN_SENT -> CLOSED"
+                        );
                     }
+
                 }
                 _ => prop_assert!(false, "unexpected transition from SYN_SENT -> {:?}", conn.state),
             }
@@ -1776,7 +1796,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_syn_ack) = gen_tcb_with_state(ConnectionState::SYN_RECEIVED, irs, seg.tcph.window());
@@ -1811,7 +1831,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from SYN_RECEIVED -> ESTABLISHED"
                     );
@@ -1833,7 +1853,7 @@ mod tests {
                     }
 
                     prop_assert_tcb!(&conn.snd,
-                        una: if acked_syn_ack { 1 } else { 0 },
+                        una: u32::from(acked_syn_ack),
                         nxt: 1,
                         wnd: seg.tcph.window(),
                         up: seg.tcph.urgent_pointer(),
@@ -1871,7 +1891,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from SYN_RECEIVED -> CLOSE_WAIT"
                     );
@@ -1893,7 +1913,7 @@ mod tests {
                     }
 
                     prop_assert_tcb!(&conn.snd,
-                        una: if acked_syn_ack { 1 } else { 0 },
+                        una: u32::from(acked_syn_ack),
                         nxt: 1,
                         wnd: seg.tcph.window(),
                         up: seg.tcph.urgent_pointer(),
@@ -1916,7 +1936,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from SYN_RECEIVED -> CLOSED"
                     );
@@ -1949,7 +1969,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_syn_ack) = gen_tcb_with_state(ConnectionState::ESTABLISHED, irs, seg.tcph.window());
@@ -1982,7 +2002,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from ESTABLISHED -> CLOSE_WAIT"
                     );
@@ -2034,7 +2054,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from ESTABLISHED -> CLOSED"
                     );
@@ -2054,7 +2074,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_fin_ack) = gen_tcb_with_state(ConnectionState::FIN_WAIT_1, irs, seg.tcph.window());
@@ -2090,7 +2110,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from FIN_WAIT_1 -> FIN_WAIT_2"
                     );
@@ -2112,12 +2132,12 @@ mod tests {
                     }
 
                     prop_assert_tcb!(&conn.snd,
-                        una: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        una: u32::from(acked_syn_ack) + u32::from(acked_fin_ack),
                         nxt: 2,
                         wnd: seg.tcph.window(),
                         up: seg.tcph.urgent_pointer(),
                         wl1: if acked_syn_ack || acked_fin_ack { seg.tcph.seq_number() } else { 0 },
-                        wl2: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        wl2: u32::from(acked_syn_ack) + u32::from(acked_fin_ack),
                         iss: 0
                    );
 
@@ -2150,7 +2170,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from FIN_WAIT_1 -> TIME_WAIT"
                     );
@@ -2172,12 +2192,12 @@ mod tests {
                     }
 
                     prop_assert_tcb!(&conn.snd,
-                        una: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        una: u32::from(acked_syn_ack) + u32::from(acked_fin_ack),
                         nxt: 2,
                         wnd: seg.tcph.window(),
                         up: seg.tcph.urgent_pointer(),
                         wl1: if acked_syn_ack || acked_fin_ack { seg.tcph.seq_number() } else { 0 },
-                        wl2: acked_syn_ack as u32 + acked_fin_ack as u32,
+                        wl2: u32::from(acked_syn_ack) + u32::from(acked_fin_ack),
                         iss: 0
                     );
 
@@ -2196,7 +2216,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from FIN_WAIT_1 -> CLOSED"
                     );
@@ -2216,7 +2236,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::FIN_WAIT_2, irs, seg.tcph.window());
@@ -2249,7 +2269,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from FIN_WAIT_2 -> TIME_WAIT"
                     );
@@ -2293,7 +2313,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from FIN_WAIT_2 -> CLOSED"
                     );
@@ -2313,7 +2333,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::CLOSE_WAIT, irs, seg.tcph.window());
@@ -2331,7 +2351,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from CLOSE_WAIT -> CLOSED"
                     );
@@ -2351,7 +2371,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::LAST_ACK, irs, seg.tcph.window());
@@ -2369,7 +2389,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from LAST_ACK -> CLOSED"
                     );
@@ -2400,7 +2420,7 @@ mod tests {
             // up the TCB to a target state using it, then the generated TCB
             // will contain synthetic but valid state, essentially building a
             // consistent history up until this arbitrary segment.
-            let seg_len = seg.tcph.syn() as u32 + seg.tcph.fin() as u32 + seg.payload.len() as u32;
+            let seg_len = u32::from(seg.tcph.syn()) + u32::from(seg.tcph.fin()) + seg.payload.len() as u32;
             let irs = seg.tcph.seq_number().wrapping_sub(seg_len);
 
             let (mut conn, _maybe_ack) = gen_tcb_with_state(ConnectionState::TIME_WAIT, irs, seg.tcph.window());
@@ -2418,7 +2438,7 @@ mod tests {
                             seg.tcph.seq_number(),
                             seg_len,
                             conn.rcv.nxt,
-                            conn.rcv.nxt.wrapping_add(conn.rcv.wnd as u32)
+                            conn.rcv.nxt.wrapping_add(u32::from(conn.rcv.wnd))
                         ),
                         "sequence number should be valid in transition from TIME_WAIT -> CLOSED"
                     );
