@@ -11,10 +11,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Header serialization/deserialization or transport-level error (e.g.,
-    /// connection reset).
+    /// Transport-level and header processing errors.
     Io(io::Error),
-    /// Invalid or malformed TCP over IPv4 segment.
+    /// Invalid or malformed IPv4/TCP segment.
     Parse(ParseError),
     /// IPv4/TCP header construction or configuration error.
     Header(HeaderError),
@@ -50,7 +49,7 @@ impl fmt::Display for Error {
     }
 }
 
-/// Errors encountered while parsing TCP over IPv4 segments.
+/// Errors encountered while parsing IPv4/TCP segments.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -133,7 +132,7 @@ impl fmt::Display for ParseError {
 pub enum HeaderError {
     /// Invalid IPv4 payload length.
     PayloadTooLarge { provided: u16, max: u16 },
-    /// Appending TCP option will exceed maximum allowed size.
+    /// Appending the TCP option will exceed maximum allowed options size.
     TcpOptionLengthExceeded { current: usize, max: usize },
     /// Invalid TCP `MSS` option value.
     InvalidTcpMssOption,

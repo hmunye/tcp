@@ -1,31 +1,32 @@
-//! TCP connection identifier based on IPv4 socket addresses.
+//! TCP connection identifiers over IPv4.
 //!
-//! [`Socket`] represents the TCP 4-tuple (source and destination IP/port),
-//! grouped into source and destination [`SocketAddr`]s.
+//! [`SocketAddrV4`] represents a single IPv4 endpoint (IP and port), while
+//! [`SocketV4`] combines source and destination endpoints to form the standard
+//! TCP 4-tuple.
 
 use std::fmt;
 use std::str::FromStr;
 
-/// Error returned from parsing an invalid [`SocketAddr`].
+/// Error returned from parsing an invalid [`SocketAddrV4`].
 #[derive(Debug)]
-pub struct AddrParseError;
+pub struct Ipv4AddrParseError;
 
-impl fmt::Display for AddrParseError {
+impl fmt::Display for Ipv4AddrParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid IPv4 socket address")
     }
 }
 
-impl std::error::Error for AddrParseError {}
+impl std::error::Error for Ipv4AddrParseError {}
 
-/// An IPv4 socket address (IP + port).
+/// IPv4 socket address (IP + port).
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-pub struct SocketAddr {
+pub struct SocketAddrV4 {
     pub addr: [u8; 4],
     pub port: u16,
 }
 
-impl fmt::Display for SocketAddr {
+impl fmt::Display for SocketAddrV4 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -35,37 +36,37 @@ impl fmt::Display for SocketAddr {
     }
 }
 
-impl FromStr for SocketAddr {
-    type Err = AddrParseError;
+impl FromStr for SocketAddrV4 {
+    type Err = Ipv4AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (ip, port) = s.split_once(':').ok_or(AddrParseError)?;
+        let (ip, port) = s.split_once(':').ok_or(Ipv4AddrParseError)?;
 
         let mut octets = [0u8; 4];
         let mut i = 0;
 
         for part in ip.split('.') {
             if i >= 4 {
-                return Err(AddrParseError);
+                return Err(Ipv4AddrParseError);
             }
 
-            octets[i] = part.parse::<u8>().map_err(|_| AddrParseError)?;
+            octets[i] = part.parse::<u8>().map_err(|_| Ipv4AddrParseError)?;
             i += 1;
         }
 
         if i != 4 {
-            return Err(AddrParseError);
+            return Err(Ipv4AddrParseError);
         }
 
-        let port = port.parse::<u16>().map_err(|_| AddrParseError)?;
+        let port = port.parse::<u16>().map_err(|_| Ipv4AddrParseError)?;
 
-        Ok(SocketAddr { addr: octets, port })
+        Ok(SocketAddrV4 { addr: octets, port })
     }
 }
 
-impl From<([u8; 4], u16)> for SocketAddr {
+impl From<([u8; 4], u16)> for SocketAddrV4 {
     fn from(parts: ([u8; 4], u16)) -> Self {
-        SocketAddr {
+        SocketAddrV4 {
             addr: parts.0,
             port: parts.1,
         }
@@ -73,14 +74,14 @@ impl From<([u8; 4], u16)> for SocketAddr {
 }
 
 /// Unique identifier for a TCP connection defined by its source and destination
-/// [`SocketAddr`]s.
+/// [`SocketAddrV4`]s.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-pub struct Socket {
-    pub src: SocketAddr,
-    pub dst: SocketAddr,
+pub struct SocketV4 {
+    pub src: SocketAddrV4,
+    pub dst: SocketAddrV4,
 }
 
-impl fmt::Display for Socket {
+impl fmt::Display for SocketV4 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} -> {}", self.src, self.dst)
     }
@@ -92,13 +93,22 @@ mod tests {
 
     #[test]
     fn test_addr_display_fmt() {
-        let addr: SocketAddr = ([127, 0, 0, 1], 8008).into();
+        let addr: SocketAddrV4 = ([127, 0, 0, 1], 8008).into();
         assert_eq!("127.0.0.1:8008", format!("{addr}"));
 
-        let addr: SocketAddr = "127.0.0.1:4007"
+        let addr: SocketAddrV4 = "127.0.0.1:4007"
             .parse()
             .expect("should be a valid IPv4 socket address");
         assert_eq!("127.0.0.1:4007", format!("{addr}"));
+    }
+
+    #[test]
+    fn test_socket_display_fmt() {
+        let src: SocketAddrV4 = ([127, 0, 0, 1], 43221).into();
+        let dst: SocketAddrV4 = ([127, 0, 0, 1], 443).into();
+        let sock = SocketV4 { src, dst };
+
+        assert_eq!("127.0.0.1:43221 -> 127.0.0.1:443", format!("{sock}"));
     }
 
     #[test]
@@ -111,7 +121,7 @@ mod tests {
         ];
 
         for (input, expected_ip, expected_port) in cases {
-            let addr: SocketAddr = input
+            let addr: SocketAddrV4 = input
                 .parse()
                 .expect("should be a valid IPv4 socket address");
             assert_eq!(addr.addr, expected_ip);
@@ -138,7 +148,7 @@ mod tests {
 
         for input in cases {
             assert!(
-                input.parse::<SocketAddr>().is_err(),
+                input.parse::<SocketAddrV4>().is_err(),
                 "'{input}' should not be parsed as a valid IPv4 socket address"
             );
         }

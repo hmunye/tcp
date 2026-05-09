@@ -202,6 +202,7 @@ pub enum Protocol {
 }
 
 impl From<Protocol> for u8 {
+    #[inline]
     fn from(proto: Protocol) -> u8 {
         proto as u8
     }
@@ -212,21 +213,21 @@ impl TryFrom<u8> for Protocol {
 
     #[inline]
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        use Protocol::*;
-
         let protocol = match value {
-            0 | 255 => Reserved,
+            0 | 255 => Protocol::Reserved,
             // SAFETY: `1..=54` and `61..=100` are all defined variants. `u8`
             // and `Protocol` have the same memory layout.
             1..=54 | 61..=100 => unsafe { mem::transmute::<u8, Protocol>(value) },
-            55..=60 | 101..=254 => Unassigned,
+            55..=60 | 101..=254 => Protocol::Unassigned,
         };
 
         match protocol {
-            Unassigned | Reserved => Err(Error::Parse(ParseError::InvalidProtocol {
-                protocol,
-                value,
-            })),
+            Protocol::Unassigned | Protocol::Reserved => {
+                Err(Error::Parse(ParseError::InvalidProtocol {
+                    protocol,
+                    value,
+                }))
+            }
             _ => Ok(protocol),
         }
     }

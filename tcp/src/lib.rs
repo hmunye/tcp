@@ -1,13 +1,25 @@
 //! User-space implementation of the Transmission Control Protocol (TCP), based
 //! primarily on [RFC 793].
 //!
-//! This crate implements TCP as a protocol engine: a state machine operating
-//! over IPv4-based TCP segments that drives connection establishment, data
-//! transfer, and connection teardown according to the specification.
+//! Implemented as a protocol engine: a state machine operating over IPv4-based
+//! TCP segments that manages connection lifecycle, bidirectional data transfer,
+//! and termination/reset.
 //!
-//! It is **not** a socket library and does not perform any I/O or interact with
-//! the operating system’s networking facilities. Instead, it consumes and
-//! produces raw TCP segments while maintaining the full per-connection state.
+//! This crate is **not a socket library.** It performs no network I/O and
+//! shares no state with the host operating system. Instead, it drives a TCP
+//! state machine over raw byte slices, generating TCP segments in response to
+//! explicit connection operations and incoming packets, and provides types for
+//! serializing/deserializing IPv4/TCP headers.
+//!
+//! ### Unsupported Extensions
+//!
+//! TODO: Document missing extensions:
+//!
+//! - No congestion control algorithms (e.g., slow start, fast retransmit)
+//! - No support for Selective Acknowledgment (SACK)
+//! - No window scaling
+//! - TCP Fast Open is not implemented
+//! - No delayed acknowledgments
 //!
 //! ### Feature Flags
 //!
@@ -27,21 +39,11 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
-// TODO: Fix limitations.
-//
-// Current limitations include, but are not limited to:
+// TODO: Implement limitations.
 //
 // - Handling of buffered application data (currently buffered, not drained)
 // - No zero-window probing
 // - No Initial Send Sequence Number (ISS) randomization
-//
-// TODO: Add section to module doc for missing extensions:
-//
-// - No congestion control algorithms (e.g., slow start, fast retransmit)
-// - No support for Selective Acknowledgment (SACK)
-// - No window scaling
-// - TCP Fast Open is not implemented
-// - No delayed acknowledgments
 
 // Must be defined first!
 #[macro_use]
@@ -51,7 +53,7 @@ pub mod error;
 pub use error::{Error, HeaderError, ParseError, Result};
 
 pub mod socket;
-pub use socket::{AddrParseError, Socket, SocketAddr};
+pub use socket::{Ipv4AddrParseError, SocketAddrV4, SocketV4};
 
 pub mod protocol;
 pub mod wire;

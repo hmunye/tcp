@@ -24,7 +24,7 @@ use crate::{Error, HeaderError, ParseError, Result};
 /// [(RFC 791, Section 3.1)]: https://www.rfc-editor.org/rfc/rfc791#section-3.1
 #[derive(Debug, Clone, Copy)]
 pub struct Ipv4Header {
-    /// `Version` of the IP header (should be 4 for IPv4).
+    /// `Version` of the IP header (4 for IPv4).
     ///
     /// `Internet Header Length` (IHL), in 32-bit words. Minimum valid header is
     /// 5 words (20 bytes).
@@ -133,10 +133,10 @@ pub struct Ipv4Header {
 }
 
 impl Ipv4Header {
-    /// Minimum length of an IPv4 header in bytes.
+    /// Minimum allowed length for an IPv4 header in bytes.
     pub const MIN_HEADER_LEN: usize = (Self::MIN_IHL << 2) as usize;
 
-    /// Maximum length of an IPv4 header in bytes.
+    /// Maximum allowed length for an IPv4 header in bytes.
     ///
     /// `IHL` has a minimum value of 5 words (20 bytes).
     ///
@@ -154,19 +154,20 @@ impl Ipv4Header {
     /// An `IHL` of 15 words corresponds to 60 bytes.
     pub const MAX_HEADER_LEN: usize = (Self::MAX_IHL << 2) as usize;
 
-    /// Minimum `IHL` of an IPv4 header.
+    /// Minimum allowed `IHL` for an IPv4 header.
     const MIN_IHL: u8 = 5;
 
-    /// Maximum `IHL` of an IPv4 header.
+    /// Maximum allowed `IHL` for an IPv4 header.
     const MAX_IHL: u8 = 15;
 
-    /// Creates a new IPv4 header with the given id, source and destination
+    /// Creates a new `Ipv4Header` with the given id, source and destination
     /// addresses, payload length, `TTL`, and protocol. Other fields are set to
     /// their _defaults_.
     ///
     /// # Errors
     ///
-    /// Returns an error if `payload_len` exceeds the maximum payload length.
+    /// Returns an error if `payload_len` exceeds the maximum allowed payload
+    /// length.
     ///
     /// # Examples
     ///
@@ -192,7 +193,7 @@ impl Ipv4Header {
         ttl: u8,
         protocol: Protocol,
     ) -> Result<Self> {
-        let mut header = Self {
+        let mut header = Ipv4Header {
             // Version = 4, IHL = 5
             version_ihl: 0b0100_0101,
             tos: 0,
@@ -216,13 +217,13 @@ impl Ipv4Header {
         Ok(header)
     }
 
-    /// Returns the `Version` field of the IPv4 header.
+    /// Returns the IPv4 `Version` field.
     #[inline]
     pub const fn version(&self) -> u8 {
         self.version_ihl >> 4
     }
 
-    /// Returns the `IHL` field of the IPv4 header, in 32-bit words.
+    /// Returns the IPv4 `IHL` field.
     ///
     /// To get the header length in bytes, use [`Ipv4Header::header_len`].
     #[inline]
@@ -230,61 +231,73 @@ impl Ipv4Header {
         self.version_ihl & 0xF
     }
 
-    /// Returns the `Type of Service` field of the IPv4 header.
+    /// Returns the IPv4 `Type of Service` field.
     #[inline]
     pub const fn tos(&self) -> u8 {
         self.tos
     }
 
-    /// Returns the `Total Length` field of the IPv4 header.
+    /// Returns the IPv4 `Total Length` field.
     #[inline]
     pub const fn total_length(&self) -> u16 {
         self.total_length
     }
 
-    /// Returns the `Identification` field of the IPv4 header.
+    /// Returns the IPv4 `Identification` field.
     #[inline]
     pub const fn id(&self) -> u16 {
         self.id
     }
 
-    /// Returns `true` if the IPv4 header's `DF` (Don't Fragment) flag is set.
+    /// Returns `true` if the `DF` (Don't Fragment) flag is set.
     #[inline]
     pub const fn dont_fragment(&self) -> bool {
         (self.flags_and_offset >> 14) & 1 == 1
     }
 
-    /// Returns `true` if the IPv4 header's `MF` (More Fragments) flag is set.
+    /// Sets the `DF` (Don't Fragment) flag.
+    #[inline]
+    pub const fn set_dont_fragment(&mut self) {
+        self.flags_and_offset |= 1 << 14
+    }
+
+    /// Returns `true` if the `MF` (More Fragments) flag is set.
     #[inline]
     pub const fn more_fragments(&self) -> bool {
         (self.flags_and_offset >> 13) & 1 == 1
     }
 
-    /// Returns the `Fragment Offset` field of the IPv4 header.
+    /// Sets the `MF` (More Fragment) flag.
+    #[inline]
+    pub const fn set_more_fragments(&mut self) {
+        self.flags_and_offset |= 1 << 13
+    }
+
+    /// Returns the IPv4 `Fragment Offset` field.
     #[inline]
     pub const fn fragment_offset(&self) -> u16 {
         self.flags_and_offset & 0x1FFF
     }
 
-    /// Returns the `Time to Live` field of the IPv4 header.
+    /// Returns the IPv4 `Time to Live` field.
     #[inline]
     pub const fn ttl(&self) -> u8 {
         self.ttl
     }
 
-    /// Returns the `Protocol` field of the IPv4 header.
+    /// Returns the IPv4 `Protocol` field.
     #[inline]
     pub const fn protocol(&self) -> Protocol {
         self.protocol
     }
 
-    /// Returns the `Header Checksum` field of the IPv4 header.
+    /// Returns the IPv4 `Header Checksum` field.
     #[inline]
     pub const fn header_checksum(&self) -> u16 {
         self.header_checksum
     }
 
-    /// Computes and sets the IPv4 Header checksum.
+    /// Sets the IPv4 `Header Checksum` field.
     ///
     /// # Examples
     ///
@@ -301,76 +314,200 @@ impl Ipv4Header {
     /// )
     /// .unwrap();
     ///
-    /// // Set initial header checksum value.
+    /// // Set initial header checksum.
     /// iph.set_header_checksum();
-    /// assert_eq!(iph.header_checksum(), iph.compute_header_checksum());
+    /// assert!(iph.is_valid_checksum());
     ///
-    /// // Invalidates the header checksum.
+    /// // Invalidate header checksum.
     /// iph.set_payload_len(255).unwrap();
-    ///
-    /// assert_ne!(iph.header_checksum(), iph.compute_header_checksum());
+    /// assert!(!iph.is_valid_checksum());
     ///
     /// iph.set_header_checksum();
-    /// assert_eq!(iph.header_checksum(), iph.compute_header_checksum());
+    /// assert!(iph.is_valid_checksum());
     /// ```
     #[inline]
     pub fn set_header_checksum(&mut self) {
         self.header_checksum = self.compute_header_checksum();
     }
 
-    /// Returns `true` if the IPv4 Header checksum is valid.
+    /// Returns `true` if the IPv4 `Header Checksum` field is valid.
     #[inline]
     pub fn is_valid_checksum(&self) -> bool {
         self.header_checksum == self.compute_header_checksum()
     }
 
-    /// Returns the `Source Address` field of the IPv4 header.
+    /// Returns the IPv4 `Source Address` field.
     #[inline]
     pub const fn src_addr(&self) -> [u8; 4] {
         self.src_addr
     }
 
-    /// Returns the `Destination Address` field of the IPv4 header.
+    /// Returns the IPv4 `Destination Address` field.
     #[inline]
     pub const fn dst_addr(&self) -> [u8; 4] {
         self.dst_addr
     }
 
-    /// Returns a reference to the `Options` field of the IPv4 header.
+    /// Returns a reference to the `Ipv4Options`.
     #[inline]
     pub const fn options(&self) -> &Ipv4Options {
         &self.options
     }
 
-    /// Returns the payload length (excluding the IPv4 header).
+    /// Returns the payload length (excluding header).
     #[inline]
     pub const fn payload_len(&self) -> u16 {
         self.total_length - self.header_len() as u16
     }
 
-    /// Sets the `Total Length` field of the IPv4 header given a payload length.
+    /// Sets the IPv4 `Total Length` field given a payload length.
     ///
     /// # Errors
     ///
-    /// Returns an error if `payload_len` exceeds the maximum payload length.
+    /// Returns an error if `payload_len` exceeds the maximum allowed payload
+    /// length.
     #[inline]
     pub fn set_payload_len(&mut self, payload_len: u16) -> Result<()> {
         self.total_length = self.compute_total_length(payload_len)?;
         Ok(())
     }
 
-    /// Returns the length of the IPv4 header in bytes (including options).
+    /// Returns the length of the header in bytes (including options).
     #[inline]
     pub const fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN + self.options.len()
     }
 
-    /// Computes the IPv4 header checksum.
+    /// Returns the memory representation of the IPv4 header as a [`FixedBuf`]
+    /// in big-endian (network) byte order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::{Protocol, Ipv4Header};
+    ///
+    /// let mut iph = Ipv4Header::new(
+    ///     0,
+    ///     [192, 168, 0, 1],
+    ///     [192, 168, 0, 44],
+    ///     0,
+    ///     64,
+    ///     Protocol::TCP,
+    /// )
+    /// .unwrap();
+    /// let buf = iph.to_bytes();
+    ///
+    /// // Network-byte order representation of the IPv4 header.
+    /// let bytes = buf.as_slice();
+    /// ```
+    #[inline]
+    pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
+        let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
+
+        buf.append(&[self.version_ihl, self.tos]);
+        buf.append(&self.total_length.to_be_bytes());
+        buf.append(&self.id.to_be_bytes());
+        buf.append(&self.flags_and_offset.to_be_bytes());
+        buf.append(&[self.ttl, self.protocol.into()]);
+        buf.append(&self.header_checksum.to_be_bytes());
+        buf.append(&self.src_addr);
+        buf.append(&self.dst_addr);
+        buf.append(self.options().as_slice());
+
+        buf
+    }
+
+    /// Parses an `Ipv4Header` from the given reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns any encountered I/O error or an error if the available bytes are
+    /// insufficient or malformed to form a valid `Ipv4Header`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    ///
+    /// use tcp::wire::Ipv4Header;
+    ///
+    /// // Minimal IPv4 header bytes (no options).
+    /// let data: [u8; 20] = [
+    ///     0x45, 0x00, 0x00, 0x28,
+    ///     0x00, 0x01, 0x00, 0x00,
+    ///     0x40, 0x06, 0x00, 0x00,
+    ///     192, 168, 0, 1,
+    ///     192, 168, 0, 2,
+    /// ];
+    ///
+    /// let mut cursor = Cursor::new(&data);
+    /// let iph = Ipv4Header::read(&mut cursor).unwrap();
+    ///
+    /// assert_eq!(iph.version(), 4);
+    /// assert_eq!(iph.ihl(), 5);
+    /// ```
+    pub fn read<T: std::io::Read>(r: &mut T) -> Result<Self> {
+        // TODO: Use `Read::read_buf` with `FixedBuf` when it is stable.
+        //
+        // <https://github.com/rust-lang/rust/issues/78485>
+        let mut buf = [0u8; Self::MAX_HEADER_LEN];
+
+        r.read_exact(&mut buf[..Self::MIN_HEADER_LEN])?;
+
+        let ihl = (buf[0] & 0xF) as usize;
+        let header_len = ihl << 2;
+        let remaining = header_len.saturating_sub(Self::MIN_HEADER_LEN);
+
+        if remaining != 0 {
+            r.read_exact(&mut buf[Self::MIN_HEADER_LEN..Self::MIN_HEADER_LEN + remaining])?;
+        }
+
+        Ipv4Header::try_from(&buf[..header_len])
+    }
+
+    /// Writes the `Ipv4Header` to the given writer.
+    ///
+    /// It is the callers responsibility to ensure the checksum is [`set`]
+    /// before writing the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns any encountered I/O error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::{Protocol, Ipv4Header};
+    ///
+    /// let mut iph = Ipv4Header::new(
+    ///     0,
+    ///     [192, 168, 0, 1],
+    ///     [192, 168, 0, 44],
+    ///     0,
+    ///     64,
+    ///     Protocol::TCP,
+    /// )
+    /// .unwrap();
+    ///
+    /// // **Must** set header checksum before writing IPv4 header.
+    /// iph.set_header_checksum();
+    ///
+    /// let mut buf = Vec::new();
+    /// iph.write(&mut buf).unwrap();
+    /// assert_eq!(buf.len(), 20);
+    /// ```
+    ///
+    /// [`set`]: Ipv4Header::set_header_checksum
+    pub fn write<T: std::io::Write>(&self, w: &mut T) -> Result<()> {
+        Ok(w.write_all(self.to_bytes().as_slice())?)
+    }
+
+    /// Returns the computed TCP header checksum.
     ///
     /// The checksum is the 16-bit one's complement of the one's complement sum
     /// of all 16-bit words in the header. The checksum field itself is treated
     /// as zero during computation.
-    pub fn compute_header_checksum(&self) -> u16 {
+    fn compute_header_checksum(&self) -> u16 {
         let mut buf = self.to_bytes();
         let header_bytes = buf.as_slice_mut();
 
@@ -401,128 +538,6 @@ impl Ipv4Header {
         !(sum as u16)
     }
 
-    /// Returns the memory representation of the IPv4 header as a [`FixedBuf`]
-    /// in big-endian (network) byte order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tcp::wire::{Protocol, Ipv4Header};
-    ///
-    /// let mut iph = Ipv4Header::new(
-    ///     0,
-    ///     [192, 168, 0, 1],
-    ///     [192, 168, 0, 44],
-    ///     0,
-    ///     64,
-    ///     Protocol::TCP,
-    /// )
-    /// .unwrap();
-    ///
-    /// let buf = iph.to_bytes();
-    /// // Network-byte order representation of the IPv4 header.
-    /// let bytes = buf.as_slice();
-    /// ```
-    #[inline]
-    pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
-        let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
-
-        buf.append(&[self.version_ihl, self.tos]);
-        buf.append(&self.total_length.to_be_bytes());
-        buf.append(&self.id.to_be_bytes());
-        buf.append(&self.flags_and_offset.to_be_bytes());
-        buf.append(&[self.ttl, self.protocol.into()]);
-        buf.append(&self.header_checksum.to_be_bytes());
-        buf.append(&self.src_addr);
-        buf.append(&self.dst_addr);
-        buf.append(self.options().as_slice());
-
-        buf
-    }
-
-    /// Reads and parses an IPv4 header from the given reader.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an I/O error is encountered or the available bytes
-    /// are insufficient or malformed to form a valid IPv4 header.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::io::Cursor;
-    /// use tcp::wire::Ipv4Header;
-    ///
-    /// // Minimal IPv4 header bytes (no options).
-    /// let data: [u8; 20] = [
-    ///     0x45, 0x00, 0x00, 0x28,
-    ///     0x00, 0x01, 0x00, 0x00,
-    ///     0x40, 0x06, 0x00, 0x00,
-    ///     192, 168, 0, 1,
-    ///     192, 168, 0, 2,
-    /// ];
-    ///
-    /// let mut cursor = Cursor::new(&data);
-    /// let iph = Ipv4Header::read(&mut cursor).unwrap();
-    /// assert_eq!(iph.version(), 4);
-    /// assert_eq!(iph.header_len(), 20);
-    /// ```
-    pub fn read<T: std::io::Read>(r: &mut T) -> Result<Self> {
-        // FIXME: Use `Read::read_buf` with `FixedBuf` when it is stable.
-        //
-        // <https://github.com/rust-lang/rust/issues/78485>
-        let mut buf = [0u8; Self::MAX_HEADER_LEN];
-
-        r.read_exact(&mut buf[..Self::MIN_HEADER_LEN])?;
-
-        let ihl = (buf[0] & 0xF) as usize;
-        let header_len = ihl << 2;
-        let remaining = header_len.saturating_sub(Self::MIN_HEADER_LEN);
-
-        if remaining != 0 {
-            r.read_exact(&mut buf[Self::MIN_HEADER_LEN..Self::MIN_HEADER_LEN + remaining])?;
-        }
-
-        Ipv4Header::try_from(&buf[..header_len])
-    }
-
-    /// Writes the IPv4 header to the given writer.
-    ///
-    /// It is the callers responsibility to ensure the header checksum is
-    /// [`set`] before writing the header.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an I/O error is encountered.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tcp::wire::{Protocol, Ipv4Header};
-    ///
-    /// let mut iph = Ipv4Header::new(
-    ///     0,
-    ///     [192, 168, 0, 1],
-    ///     [192, 168, 0, 44],
-    ///     0,
-    ///     64,
-    ///     Protocol::TCP,
-    /// )
-    /// .unwrap();
-    ///
-    /// // **Must** set header checksum before writing IPv4 header.
-    /// iph.set_header_checksum();
-    ///
-    /// let mut buf = Vec::new();
-    /// iph.write(&mut buf).unwrap();
-    /// assert_eq!(buf.len(), 20);
-    /// ```
-    ///
-    /// [`set`]: Ipv4Header::set_header_checksum
-    pub fn write<T: std::io::Write>(&self, w: &mut T) -> Result<()> {
-        Ok(w.write_all(self.to_bytes().as_slice())?)
-    }
-
     #[inline]
     fn compute_total_length(&self, payload_len: u16) -> Result<u16> {
         (self.header_len() as u16)
@@ -542,7 +557,6 @@ impl Ipv4Header {
 impl TryFrom<&[u8]> for Ipv4Header {
     type Error = Error;
 
-    #[inline]
     fn try_from(bytes: &[u8]) -> core::result::Result<Self, Self::Error> {
         let len = bytes.len();
 
@@ -610,7 +624,7 @@ impl TryFrom<&[u8]> for Ipv4Header {
     }
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 impl Default for Ipv4Header {
     fn default() -> Self {
         Self {

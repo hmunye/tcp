@@ -108,10 +108,10 @@ pub struct TcpHeader {
 }
 
 impl TcpHeader {
-    /// Minimum length of a TCP header in bytes.
+    /// Minimum allowed length for a TCP header in bytes.
     pub const MIN_HEADER_LEN: usize = (Self::MIN_DATA_OFFSET << 2) as usize;
 
-    /// Maximum length of a TCP header in bytes.
+    /// Maximum allowed length for a TCP header in bytes.
     ///
     /// `data offset` has a minimum value of 5 words (20 bytes).
     ///
@@ -129,32 +129,27 @@ impl TcpHeader {
     /// A `data_offset` of 15 words corresponds to 60 bytes.
     pub const MAX_HEADER_LEN: usize = (Self::MAX_DATA_OFFSET << 2) as usize;
 
-    /// Minimum `data_offset` value of a TCP header.
+    /// Minimum allowed `data_offset` for a TCP header.
     const MIN_DATA_OFFSET: u8 = 5;
 
-    /// Maximum `data_offset` value of a TCP header.
+    /// Maximum allowed `data_offset` for a TCP header.
     const MAX_DATA_OFFSET: u8 = 15;
 
-    /// Creates a new TCP header with the given source and destination ports,
-    /// initial sequence number (ISN), and window size. Other fields are set to
-    /// their _defaults_.
+    /// Creates a new `TcpHeader` with the given source and destination ports,
+    /// initial sequence number (`ISN`), and window size. Other fields are set
+    /// to their _defaults_.
     ///
     /// # Examples
     ///
     /// ```
     /// use tcp::wire::TcpHeader;
     ///
-    /// let tph = TcpHeader::new(
-    ///     41324,
-    ///     80,
-    ///     0,
-    ///     65535,
-    /// );
+    /// let tcph = TcpHeader::new(41324, 80, 0, 65535);
     /// ```
     #[inline]
     #[must_use]
     pub const fn new(src_port: u16, dst_port: u16, seq_number: u32, window: u16) -> Self {
-        Self {
+        TcpHeader {
             src_port,
             dst_port,
             seq_number,
@@ -171,204 +166,197 @@ impl TcpHeader {
         }
     }
 
-    /// Returns the `Source Port` field of the TCP header.
+    /// Returns the TCP `Source Port` field.
     #[inline]
     pub const fn src_port(&self) -> u16 {
         self.src_port
     }
 
-    /// Returns the `Destination Port` field of the TCP header.
+    /// Returns the TCP `Destination Port` field.
     #[inline]
     pub const fn dst_port(&self) -> u16 {
         self.dst_port
     }
 
-    /// Returns the `Sequence Number` field of the TCP header.
+    /// Returns the TCP `Sequence Number` field.
     #[inline]
     pub const fn seq_number(&self) -> u32 {
         self.seq_number
     }
 
-    /// Returns the `Acknowledgment Number` field of the TCP header.
+    /// Returns the TCP `Acknowledgment Number` field.
     #[inline]
     pub const fn ack_number(&self) -> u32 {
         self.ack_number
     }
 
-    /// Sets the `Acknowledgment Number` field of the TCP header with the
-    /// given value.
+    /// Sets the TCP `Acknowledgment Number` field to the given value.
     #[inline]
     pub const fn set_ack_number(&mut self, ack: u32) {
         self.ack_number = ack;
     }
 
-    /// Returns the `Data Offset` field of the TCP header.
+    /// Returns the TCP `Data Offset` field.
     ///
-    /// To get the header length (including options) in bytes, use
-    /// [TcpHeader::header_len].
+    /// To get the header length in bytes, use [TcpHeader::header_len].
     #[inline]
     pub const fn data_offset(&self) -> u8 {
         (self.data_offset_and_flags >> 12) as u8
     }
 
-    /// Returns `true` if the `URG` (Urgent) flag is set in the TCP header.
+    /// Returns `true` if the `URG` (Urgent) flag is set.
     #[inline]
     pub const fn urg(&self) -> bool {
         (self.data_offset_and_flags >> 5) & 1 == 1
     }
 
-    /// Sets the `URG` (Urgent) flag in the TCP header.
+    /// Sets the `URG` (Urgent) flag.
     #[inline]
     pub const fn set_urg(&mut self) {
         self.data_offset_and_flags |= 1 << 5;
     }
 
-    /// Returns `true` if the `ACK` (Acknowledgment) flag is set in the TCP
-    /// header.
+    /// Returns `true` if the `ACK` (Acknowledgment) flag is set.
     #[inline]
     pub const fn ack(&self) -> bool {
         (self.data_offset_and_flags >> 4) & 1 == 1
     }
 
-    /// Sets the `ACK` (Acknowledgment) flag in the TCP header.
+    /// Sets the `ACK` (Acknowledgment) flag.
     #[inline]
     pub const fn set_ack(&mut self) {
         self.data_offset_and_flags |= 1 << 4;
     }
 
-    /// Returns `true` if the `PSH` (Push) flag is set in the TCP header.
+    /// Returns `true` if the `PSH` (Push) flag is set.
     #[inline]
     pub const fn psh(&self) -> bool {
         (self.data_offset_and_flags >> 3) & 1 == 1
     }
 
-    /// Sets the `PSH` (Push) flag in the TCP header.
+    /// Sets the `PSH` (Push) flag.
     #[inline]
     pub const fn set_psh(&mut self) {
         self.data_offset_and_flags |= 1 << 3;
     }
 
-    /// Returns `true` if the `RST` (Reset) flag is set in the TCP header.
+    /// Returns `true` if the `RST` (Reset) flag is set.
     #[inline]
     pub const fn rst(&self) -> bool {
         (self.data_offset_and_flags >> 2) & 1 == 1
     }
 
-    /// Sets the `RST` (Reset) flag in the TCP header.
+    /// Sets the `RST` (Reset) flag.
     #[inline]
     pub const fn set_rst(&mut self) {
         self.data_offset_and_flags |= 1 << 2;
     }
 
-    /// Returns `true` if the `SYN` (Synchronize) flag is set in the TCP header.
+    /// Returns `true` if the `SYN` (Synchronize) flag is set.
     #[inline]
     pub const fn syn(&self) -> bool {
         (self.data_offset_and_flags >> 1) & 1 == 1
     }
 
-    /// Sets the `SYN` (Synchronize) flag in the TCP header.
+    /// Sets the `SYN` (Synchronize) flag.
     #[inline]
     pub const fn set_syn(&mut self) {
         self.data_offset_and_flags |= 1 << 1;
     }
 
-    /// Returns `true` if the `FIN` (Finish) flag is set in the TCP header.
+    /// Returns `true` if the `FIN` (Finish) flag is set.
     #[inline]
     pub const fn fin(&self) -> bool {
         self.data_offset_and_flags & 1 == 1
     }
 
-    /// Sets the `FIN` (Finish) flag in the TCP header.
+    /// Sets the `FIN` (Finish) flag.
     #[inline]
     pub const fn set_fin(&mut self) {
         self.data_offset_and_flags |= 1;
     }
 
-    /// Returns the `Window` field of the TCP header.
+    /// Returns the TCP `Window` field.
     #[inline]
     pub const fn window(&self) -> u16 {
         self.window
     }
 
-    /// Returns the `Checksum` field of the TCP header.
+    /// Returns the TCP `Checksum` field.
     #[inline]
     pub const fn checksum(&self) -> u16 {
         self.checksum
     }
 
-    /// Computes and sets the TCP header checksum field.
+    /// Sets the TCP `Checksum` field with the given `Ipv4Header` and payload.
     ///
     /// # Examples
     ///
     /// ```
     /// use tcp::wire::{Protocol, Ipv4Header, TcpHeader};
     ///
-    /// let mut tph = TcpHeader::new(
-    ///     41324,
-    ///     80,
-    ///     0,
-    ///     65535,
-    /// );
+    /// let mut tcph = TcpHeader::new(41324, 80, 0, 65535);
     /// let payload = b"hello, world";
     ///
     /// let mut iph = Ipv4Header::new(
     ///     0,
     ///     [192, 168, 0, 1],
     ///     [192, 168, 0, 44],
-    ///     (tph.header_len() + payload.len()) as u16,
+    ///     (tcph.header_len() + payload.len()) as u16,
     ///     64,
     ///     Protocol::TCP,
     /// )
     /// .unwrap();
     ///
-    /// // Set initial checksum value.
-    /// tph.set_checksum(&iph, payload);
-    /// assert_eq!(tph.checksum(), tph.compute_checksum(&iph, payload));
+    /// // Set initial checksum.
+    /// tcph.set_checksum(&iph, payload);
+    /// assert!(tcph.is_valid_checksum(&iph, payload));
     ///
-    /// // Invalidates the checksum.
-    /// tph.set_syn();
+    /// // Invalidate checksum.
+    /// tcph.set_syn();
+    /// assert!(!tcph.is_valid_checksum(&iph, payload));
     ///
-    /// assert_ne!(tph.checksum(), tph.compute_checksum(&iph, payload));
-    ///
-    /// tph.set_checksum(&iph, payload);
-    /// assert_eq!(tph.checksum(), tph.compute_checksum(&iph, payload));
+    /// tcph.set_checksum(&iph, payload);
+    /// assert!(tcph.is_valid_checksum(&iph, payload));
     /// ```
     #[inline]
     pub fn set_checksum(&mut self, ip_header: &Ipv4Header, payload: &[u8]) {
         self.checksum = self.compute_checksum(ip_header, payload);
     }
 
-    /// Returns `true` if the TCP header checksum is valid.
+    /// Returns `true` if the TCP `Checksum` field is valid.
     #[inline]
     pub fn is_valid_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> bool {
         self.checksum == self.compute_checksum(ip_header, payload)
     }
 
-    /// Returns the `Urgent Pointer` field of the TCP header.
+    /// Returns the TCP `Urgent Pointer` field.
     #[inline]
     pub const fn urgent_pointer(&self) -> u16 {
         self.urg_pointer
     }
 
-    /// Returns a reference to the `Options` field of the TCP header.
+    /// Returns a reference to the `TcpOptions`.
     #[inline]
     pub const fn options(&self) -> &TcpOptions {
         &self.options
     }
 
-    /// Returns the length of the TCP header in bytes (including options).
+    /// Returns the length of the header in bytes (including options).
     #[inline]
     pub const fn header_len(&self) -> usize {
         Self::MIN_HEADER_LEN + self.options.len()
     }
 
-    /// Appends the `Maximum Segment Size` (MSS) option to the TCP header's
-    /// options.
+    /// Appends the TCP `MSS` option with the given value if not present.
+    ///
+    /// This option must only be sent in the initial connection request (i.e.,
+    /// in segments with the `SYN` flag set).
     ///
     /// # Errors
     ///
-    /// Returns an error if the header's [`TcpOptions`] lack sufficient space to
-    /// append the `MSS`, or if `mss` is zero.
+    /// Returns an error if insufficient `TcpOtions` space remains or `mss` is
+    /// zero.
     #[inline]
     pub fn set_option_mss(&mut self, mss: u16) -> Result<()> {
         self.options.set_mss(mss)?;
@@ -389,14 +377,134 @@ impl TcpHeader {
         Ok(())
     }
 
-    /// Computes the TCP header checksum.
+    /// Returns the memory representation of the TCP header as a [`FixedBuf`]
+    /// in big-endian (network) byte order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::TcpHeader;
+    ///
+    /// let tcph = TcpHeader::new(41324, 80, 0, 65535);
+    /// let buf = tcph.to_bytes();
+    ///
+    /// // Network-byte order representation of the TCP header.
+    /// let bytes = buf.as_slice();
+    /// ```
+    #[inline]
+    pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
+        let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
+
+        buf.append(&self.src_port.to_be_bytes());
+        buf.append(&self.dst_port.to_be_bytes());
+        buf.append(&self.seq_number.to_be_bytes());
+        buf.append(&self.ack_number.to_be_bytes());
+        buf.append(&self.data_offset_and_flags.to_be_bytes());
+        buf.append(&self.window.to_be_bytes());
+        buf.append(&self.checksum.to_be_bytes());
+        buf.append(&self.urg_pointer.to_be_bytes());
+        buf.append(self.options.as_slice());
+
+        buf
+    }
+
+    /// Parses a `TcpHeader` from the given reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns any encountered I/O error or an error if the available bytes are
+    /// insufficient or malformed to form a valid `TcpHeader`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    ///
+    /// use tcp::wire::TcpHeader;
+    ///
+    /// // Minimal TCP header bytes (`SYN`, no options).
+    /// let data: [u8; 20] = [
+    ///     0xa0, 0x16, 0x01, 0xbb,
+    ///     0xbc, 0xbb, 0x54, 0xa8,
+    ///     0x00, 0x00, 0x00, 0x00,
+    ///     0x50, 0x02, 0xfa, 0xf0,
+    ///     0x80, 0x3e, 0x00, 0x00,
+    /// ];
+    ///
+    /// let mut cursor = Cursor::new(&data);
+    /// let tcph = TcpHeader::read(&mut cursor).unwrap();
+    ///
+    /// assert_eq!(tcph.data_offset(), 5);
+    /// assert!(tcph.syn());
+    /// ```
+    pub fn read<T: std::io::Read>(r: &mut T) -> Result<Self> {
+        // TODO: Use `Read::read_buf` with `FixedBuf` when it is stable.
+        //
+        // <https://github.com/rust-lang/rust/issues/78485>
+        let mut buf = [0u8; Self::MAX_HEADER_LEN];
+
+        r.read_exact(&mut buf[..Self::MIN_HEADER_LEN])?;
+
+        let data_offset = (buf[12] >> 4) as usize;
+        let header_len = data_offset << 2;
+        let remaining = header_len.saturating_sub(Self::MIN_HEADER_LEN);
+
+        if remaining != 0 {
+            r.read_exact(&mut buf[Self::MIN_HEADER_LEN..Self::MIN_HEADER_LEN + remaining])?;
+        }
+
+        TcpHeader::try_from(&buf[..header_len])
+    }
+
+    /// Writes the `TcpHeader` to the given writer.
+    ///
+    /// It is the callers responsibility to ensure the checksum is [`set`]
+    /// before writing the header.
+    ///
+    /// # Errors
+    ///
+    /// Returns any encountered I/O error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
+    ///
+    /// let mut tcph = TcpHeader::new(41324, 80, 0, 65535);
+    /// let payload = b"hello, world";
+    ///
+    /// let mut iph = Ipv4Header::new(
+    ///     0,
+    ///     [192, 168, 0, 1],
+    ///     [192, 168, 0, 44],
+    ///     (tcph.header_len() + payload.len()) as u16,
+    ///     64,
+    ///     Protocol::TCP,
+    /// )
+    /// .unwrap();
+    ///
+    /// iph.set_header_checksum();
+    /// // **Must** set checksum before writing TCP header.
+    /// tcph.set_checksum(&iph, payload);
+    ///
+    /// let mut buf = Vec::new();
+    /// tcph.write(&mut buf).unwrap();
+    /// assert_eq!(buf.len(), 20);
+    /// ```
+    ///
+    /// [`set`]: TcpHeader::set_checksum
+    pub fn write<T: std::io::Write>(&self, w: &mut T) -> Result<()> {
+        Ok(w.write_all(self.to_bytes().as_slice())?)
+    }
+
+    /// Returns the computed TCP checksum.
     ///
     /// The checksum field is the 16-bit one's complement of the one's
     /// complement sum of all 16-bit words in the pseudo header, TCP header,
     /// and payload. The checksum field itself is treated as zero during
     /// computation.
-    pub fn compute_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> u16 {
-        // ```
+    fn compute_checksum(&self, ip_header: &Ipv4Header, payload: &[u8]) -> u16 {
+        // ```text
         //        +--------+--------+--------+--------+
         //        |           Source Address          |
         //        +--------+--------+--------+--------+
@@ -404,6 +512,8 @@ impl TcpHeader {
         //        +--------+--------+--------+--------+
         //        |  zero  |  PTCL  |    TCP Length   |
         //        +--------+--------+--------+--------+
+        //                     ^
+        //                     Protocol
         // ```
         let mut pseudo_header = [0u8; 12];
 
@@ -464,141 +574,11 @@ impl TcpHeader {
 
         !(sum as u16)
     }
-
-    /// Returns the memory representation of the TCP header as a [`FixedBuf`]
-    /// in big-endian (network) byte order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tcp::wire::TcpHeader;
-    ///
-    /// let tph = TcpHeader::new(
-    ///     41324,
-    ///     80,
-    ///     0,
-    ///     65535,
-    /// );
-    ///
-    /// let buf = tph.to_bytes();
-    /// // Network-byte order representation of the TCP header.
-    /// let bytes = buf.as_slice();
-    /// ```
-    #[inline]
-    pub fn to_bytes(&self) -> FixedBuf<{ Self::MAX_HEADER_LEN }> {
-        let mut buf: FixedBuf<{ Self::MAX_HEADER_LEN }> = FixedBuf::new();
-
-        buf.append(&self.src_port.to_be_bytes());
-        buf.append(&self.dst_port.to_be_bytes());
-        buf.append(&self.seq_number.to_be_bytes());
-        buf.append(&self.ack_number.to_be_bytes());
-        buf.append(&self.data_offset_and_flags.to_be_bytes());
-        buf.append(&self.window.to_be_bytes());
-        buf.append(&self.checksum.to_be_bytes());
-        buf.append(&self.urg_pointer.to_be_bytes());
-        buf.append(self.options.as_slice());
-
-        buf
-    }
-
-    /// Reads and parses a TCP header from the given reader.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an I/O error is encountered or the available bytes
-    /// are insufficient or malformed to form a valid TCP header.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::io::Cursor;
-    ///
-    /// use tcp::wire::TcpHeader;
-    ///
-    /// // Minimal TCP header bytes (`SYN`, no options).
-    /// let data: [u8; 20] = [
-    ///     0xa0, 0x16, 0x01, 0xbb,
-    ///     0xbc, 0xbb, 0x54, 0xa8,
-    ///     0x00, 0x00, 0x00, 0x00,
-    ///     0x50, 0x02, 0xfa, 0xf0,
-    ///     0x80, 0x3e, 0x00, 0x00,
-    /// ];
-    ///
-    /// let mut cursor = Cursor::new(&data);
-    /// let tph = TcpHeader::read(&mut cursor).unwrap();
-    /// assert_eq!(tph.data_offset(), 5);
-    /// assert!(tph.syn());
-    /// ```
-    pub fn read<T: std::io::Read>(r: &mut T) -> Result<Self> {
-        // FIXME: Use `Read::read_buf` with `FixedBuf` when it is stable.
-        //
-        // <https://github.com/rust-lang/rust/issues/78485>
-        let mut buf = [0u8; Self::MAX_HEADER_LEN];
-
-        r.read_exact(&mut buf[..Self::MIN_HEADER_LEN])?;
-
-        let data_offset = (buf[12] >> 4) as usize;
-        let header_len = data_offset << 2;
-        let remaining = header_len.saturating_sub(Self::MIN_HEADER_LEN);
-
-        if remaining != 0 {
-            r.read_exact(&mut buf[Self::MIN_HEADER_LEN..Self::MIN_HEADER_LEN + remaining])?;
-        }
-
-        TcpHeader::try_from(&buf[..header_len])
-    }
-
-    /// Writes the TCP header to the given writer.
-    ///
-    /// It is the callers responsibility to ensure the checksum is [`set`]
-    /// before writing the header.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an I/O error is encountered.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
-    ///
-    /// let mut tph = TcpHeader::new(
-    ///     41324,
-    ///     80,
-    ///     0,
-    ///     65535,
-    /// );
-    /// let payload = b"hello, world";
-    ///
-    /// let mut iph = Ipv4Header::new(
-    ///     0,
-    ///     [192, 168, 0, 1],
-    ///     [192, 168, 0, 44],
-    ///     (tph.header_len() + payload.len()) as u16,
-    ///     64,
-    ///     Protocol::TCP,
-    /// )
-    /// .unwrap();
-    ///
-    /// // **Must** set checksums before writing TCP header.
-    /// iph.set_header_checksum();
-    /// tph.set_checksum(&iph, payload);
-    ///
-    /// let mut buf = Vec::new();
-    /// tph.write(&mut buf).unwrap();
-    /// assert_eq!(buf.len(), 20);
-    /// ```
-    ///
-    /// [`set`]: TcpHeader::set_checksum
-    pub fn write<T: std::io::Write>(&self, w: &mut T) -> Result<()> {
-        Ok(w.write_all(self.to_bytes().as_slice())?)
-    }
 }
 
 impl TryFrom<&[u8]> for TcpHeader {
     type Error = Error;
 
-    #[inline]
     fn try_from(bytes: &[u8]) -> core::result::Result<Self, Self::Error> {
         let len = bytes.len();
 
@@ -645,7 +625,7 @@ impl TryFrom<&[u8]> for TcpHeader {
     }
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 impl Default for TcpHeader {
     fn default() -> Self {
         Self {

@@ -1,22 +1,19 @@
+use std::fmt;
+
 use crate::wire::FixedBuf;
 use crate::{Error, HeaderError, ParseError, Result};
 
-/// TCP header options.
-#[derive(Debug, Clone, Copy)]
+/// Fixed-capacity storage for TCP header options.
+#[derive(Clone, Copy)]
 pub struct TcpOptions {
     buf: FixedBuf<{ TcpOptions::MAX_OPTIONS_LEN }>,
 }
 
 impl TcpOptions {
-    /// Maximum length of TCP options in bytes.
+    /// Maximum allowed length for TCP options in bytes.
     pub const MAX_OPTIONS_LEN: usize = 40;
 
-    /// Length of the `MSS` TCP option in bytes.
-    pub(crate) const MSS_LEN: usize = 4;
-
-    /// Returns the `Maximum Segment Size` (MSS) option value, or `None` if not
-    /// set.
-    #[inline]
+    /// Returns the `MSS` option value, or `None` if not present.
     pub fn mss(&self) -> Option<u16> {
         let mut i = 0;
         let opts = self.as_slice();
@@ -65,19 +62,24 @@ impl TcpOptions {
         self.buf.len()
     }
 
-    /// Returns `true` if the `TcpOptions` contains no bytes.
+    /// Returns `true` if no `TcpOptions` are present.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
-    /// Returns an immutable slice to the `TcpOptions`.
+    /// Returns a slice to the `TcpOptions`.
     #[inline]
     pub const fn as_slice(&self) -> &[u8] {
         self.buf.as_slice()
     }
+}
 
-    /// Creates a new empty `TcpOptions`.
+impl TcpOptions {
+    /// Length of the TCP `MSS` option in bytes.
+    pub(crate) const MSS_LEN: usize = 4;
+
+    /// Creates a new, empty `TcpOptions`.
     #[inline]
     #[must_use]
     pub(crate) const fn new() -> Self {
@@ -86,11 +88,11 @@ impl TcpOptions {
         }
     }
 
-    /// Creates a new`TcpOptions` from the given byte slice.
+    /// Creates a `TcpOptions` from a byte slice.
     ///
     /// # Errors
     ///
-    /// Returns an error if `bytes.len() > TcpOptions::MAX_OPTIONS_LEN`.
+    /// Returns an error if the input exceeds [`TcpOptions::MAX_OPTIONS_LEN`].
     #[inline]
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let len = bytes.len();
@@ -108,29 +110,27 @@ impl TcpOptions {
         Ok(TcpOptions { buf })
     }
 
-    /// Appends `Maximum Segment Size` (MSS) option to `TcpOptions` using the
-    /// given value.
+    /// Appends the TCP `MSS` option with the given value if not present.
     ///
     /// # Errors
     ///
-    /// Returns an error if the `TcpOptions` lack sufficient space to append
-    /// the `MSS`, or if `mss` is zero.
-    #[inline]
+    /// Returns an error if insufficient options space remains or `mss` is zero.
     pub(crate) fn set_mss(&mut self, mss: u16) -> Result<()> {
         if mss == 0 {
             return Err(Error::Header(HeaderError::InvalidTcpMssOption));
         }
 
-        let len = self.len();
-
-        if Self::MSS_LEN > self.buf.remaining() {
-            return Err(Error::Header(HeaderError::TcpOptionLengthExceeded {
-                current: len,
-                max: Self::MAX_OPTIONS_LEN,
-            }));
-        }
-
+        // TODO: Could track set options with a bitmask for O(1) lookups.
         if self.mss().is_none() {
+            let len = self.len();
+
+            if Self::MSS_LEN > self.buf.remaining() {
+                return Err(Error::Header(HeaderError::TcpOptionLengthExceeded {
+                    current: len,
+                    max: Self::MAX_OPTIONS_LEN,
+                }));
+            }
+
             let mut mss_option = [0u8; Self::MSS_LEN];
 
             mss_option[0] = OptionKind::MSS as u8;
@@ -144,9 +144,17 @@ impl TcpOptions {
     }
 }
 
-/// Different TCP options [(RFC 793, Section 3.1)].
+impl fmt::Debug for TcpOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpOptions")
+            .field("buf", &self.as_slice())
+            .finish()
+    }
+}
+
+/// TCP options, as defined in [RFC 793, Section 3.1].
 ///
-/// [(RFC 793, Section 3.1)]: https://www.rfc-editor.org/rfc/rfc793#section-3.1
+/// [RFC 793, Section 3.1]: https://www.rfc-editor.org/rfc/rfc793#section-3.1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum OptionKind {
@@ -195,11 +203,11 @@ enum OptionKind {
     /// `SYN` flag set).
     MSS = 0o02,
 
-    /// Unsupported TCP Option.
     Unsupported,
 }
 
 impl From<u8> for OptionKind {
+    #[inline]
     fn from(val: u8) -> Self {
         match val {
             0 => OptionKind::EOL,

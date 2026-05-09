@@ -1,14 +1,16 @@
+use std::fmt;
+
 use crate::wire::FixedBuf;
 use crate::{Error, ParseError, Result};
 
-/// IPv4 header options.
-#[derive(Debug, Clone, Copy)]
+/// Fixed-capacity storage for IPv4 header options.
+#[derive(Clone, Copy)]
 pub struct Ipv4Options {
     buf: FixedBuf<{ Ipv4Options::MAX_OPTIONS_LEN }>,
 }
 
 impl Ipv4Options {
-    /// Maximum length of IPv4 options in bytes.
+    /// Maximum allowed length for IPv4 options in bytes.
     pub const MAX_OPTIONS_LEN: usize = 40;
 
     /// Returns the length of the `Ipv4Options` in bytes.
@@ -17,19 +19,21 @@ impl Ipv4Options {
         self.buf.len()
     }
 
-    /// Returns `true` if the `Ipv4Options` contains no bytes.
+    /// Returns `true` if no `Ipv4Options` are present.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
-    /// Returns an immutable slice to the `Ipv4Options`.
+    /// Returns a slice to the `Ipv4Options`.
     #[inline]
     pub const fn as_slice(&self) -> &[u8] {
         self.buf.as_slice()
     }
+}
 
-    /// Creates a new empty `Ipv4Options`.
+impl Ipv4Options {
+    /// Creates a new, empty `Ipv4Options`.
     #[inline]
     #[must_use]
     pub(crate) const fn new() -> Self {
@@ -38,11 +42,11 @@ impl Ipv4Options {
         }
     }
 
-    /// Creates a new `Ipv4Options` from the given byte slice.
+    /// Creates an `Ipv4Options` from a byte slice.
     ///
     /// # Errors
     ///
-    /// Returns an error if `bytes.len() > Ipv4Options::MAX_OPTIONS_LEN`.
+    /// Returns an error if the input exceeds [`Ipv4Options::MAX_OPTIONS_LEN`].
     #[inline]
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let len = bytes.len();
@@ -58,5 +62,13 @@ impl Ipv4Options {
         buf.append(bytes);
 
         Ok(Ipv4Options { buf })
+    }
+}
+
+impl fmt::Debug for Ipv4Options {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Ipv4Options")
+            .field("buf", &self.as_slice())
+            .finish()
     }
 }

@@ -1,11 +1,23 @@
-//! Networking primitives for TCP over IPv4.
+//! TCP protocol engine for IPv4, based on [RFC 793].
 //!
-//! This module implements components for the Transmission Control Protocol over
-//! IPv4, including socket definitions, IPv4/TCP header definitions, packet
-//! parsing/serialization, TCP segment construction, and the protocol state
-//! machine.
+//! Manages the full connection lifecycle, reliable data transfer, and network
+//! constraints without performing direct I/O. Coordinates state machine
+//! transitions, per-connection transmission control blocks, segment
+//! serialization, retransmission scheduling, and receive buffering to deliver
+//! an in-order byte stream.
+//!
+//! [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
 
-pub mod fsm;
+mod tcb;
+pub use tcb::{ConnectionState, TCB};
 
-pub mod segment;
-pub use segment::TcpSegment;
+pub(crate) mod segment_builders;
+
+mod retransmission;
+pub(crate) use retransmission::RetransmissionEntry;
+
+/// Maximum segment lifetime (`MSL`) in seconds.
+///
+/// Defined as the maximum time a segment can exist within the network before
+/// being discarded.
+pub const MSL: u64 = 120;
