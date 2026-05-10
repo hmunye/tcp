@@ -1,4 +1,4 @@
-//! Wire-format types for IPv4 and TCP packet handling.
+//! Wire-format types for IPv4-based TCP packet handling.
 //!
 //! Provides types and utilities for constructing, parsing, and serializing IPv4
 //! headers and TCP headers/segments.

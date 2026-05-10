@@ -13,13 +13,49 @@
 //!
 //! ### Unsupported Extensions
 //!
-//! TODO: Document missing extensions:
+//! #### Congestion Control Algorithms
 //!
-//! - No congestion control algorithms (e.g., slow start, fast retransmit)
-//! - No support for Selective Acknowledgment (SACK)
-//! - No window scaling
-//! - TCP Fast Open is not implemented
-//! - No delayed acknowledgments
+//! Mechanisms like slow start, congestion avoidance, and fast retransmit were
+//! added to prevent network congestion collapse. They dynamically adjust the
+//! sending rate based on detected packet loss and network conditions, ensuring
+//! stable and efficient traffic flow.
+//!
+//! #### Selective Acknowledgment (SACK)
+//!
+//! SACK allows a receiver to acknowledge non-contiguous segments of data. This
+//! reduces unnecessary retransmissions when some packets are lost, improving
+//! throughput on lossy or high-latency connections.
+//!
+//! #### Window Scaling
+//!
+//! The original 16-bit TCP window limits the maximum buffer size to 65,535
+//! bytes. Window scaling extends this limit, enabling large receive windows for
+//! high-bandwidth, high-latency networks, which improves transfer efficiency.
+//!
+//! #### TCP Fast Open
+//!
+//! TCP Fast Open allows sending data during the initial handshake. This reduces
+//! latency for repeated connections, particularly for short-lived transactions
+//! like HTTP requests.
+//!
+//! #### Delayed Acknowledgments
+//!
+//! Delayed ACKs introduce a short wait before sending an acknowledgment. This
+//! allows ACKs to be combined with outgoing data, reducing small packets and
+//! improving network efficiency.
+//!
+//! #### TCP Timestamps / PAWS
+//!
+//! Timestamps provide more accurate round-trip time measurement and allow the
+//! PAWS (Protection Against Wrapped Sequence numbers) mechanism to reject old
+//! or duplicate segments, improving reliability over long-lived or high-speed
+//! connections.
+//!
+//! #### Explicit Congestion Notification (ECN)
+//!
+//! ECN allows routers to mark packets instead of dropping them when congestion
+//! occurs. TCP endpoints can then reduce sending rates proactively, improving
+//! performance and avoiding packet loss under congestion.
 //!
 //! ### Feature Flags
 //!
@@ -29,7 +65,7 @@
 //! - `default`: Enables none of the features listed below.
 //! - `full`: Enables all features listed below.
 //! - `trace`: Enables internal TCP execution tracing of the state machine and
-//!   segment processing for debugging purposes.
+//!   segment processing for debugging purposes, printing to `stderr`.
 //!
 //! [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
 

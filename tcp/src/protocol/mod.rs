@@ -1,10 +1,10 @@
 //! TCP protocol engine for IPv4, based on [RFC 793].
 //!
 //! Manages the full connection lifecycle, reliable data transfer, and network
-//! constraints without performing direct I/O. Coordinates state machine
-//! transitions, per-connection transmission control blocks, segment
-//! serialization, retransmission scheduling, and receive buffering to deliver
-//! an in-order byte stream.
+//! constraints unrelated to direct I/O. Coordinates state machine transitions,
+//! per-connection transmission control blocks, segment serialization,
+//! retransmission scheduling, and receive buffering to deliver an in-order byte
+//! stream.
 //!
 //! [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
 

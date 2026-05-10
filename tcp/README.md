@@ -1,9 +1,7 @@
 # tcp
 
 User-space **Transmission Control Protocol (TCP)** implementation built to explore 
-how the protocol works in practice, based primarily on [RFC 793].
-
-[RFC 793]: https://www.rfc-editor.org/rfc/rfc793
+how the protocol works in practice, based primarily on [RFC 793](https://www.rfc-editor.org/rfc/rfc793).
 
 > [!WARNING]
 > This project is experimental and not intended for production use.

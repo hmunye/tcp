@@ -24,7 +24,7 @@ const DEFAULT_RCV_WND: u16 = u16::MAX; // 64 KB
 #[derive(Debug)]
 pub struct TCB {
     /// TCP connection state.
-    pub(crate) state: ConnectionState,
+    state: ConnectionState,
     /// Local and peer socket addresses.
     pub(crate) sock: SocketV4,
     /// Receive sequence space tracking.
@@ -32,18 +32,18 @@ pub struct TCB {
     /// Send sequence space tracking.
     pub(crate) snd: SndSeqSpace,
     /// In-order bytes received from the peer, ready for application delivery.
-    pub(crate) rcv_buf: Vec<u8>,
+    rcv_buf: Vec<u8>,
     /// Application data not yet transmitted (e.g., peer window closing).
-    pub(crate) snd_queue: VecDeque<Vec<u8>>,
+    snd_queue: VecDeque<Vec<u8>>,
     /// Out-of-order segments buffered by sequence number for in-order
     /// reassembly.
-    pub(crate) reassembly_map: BTreeMap<u32, Vec<u8>>,
+    reassembly_map: BTreeMap<u32, Vec<u8>>,
     /// Sent TCP segments awaiting acknowledgment, tracked for retransmission.
-    pub(crate) retransmit_queue: VecDeque<RetransmissionEntry>,
+    retransmit_queue: VecDeque<RetransmissionEntry>,
     /// Expiration time for the `TIME_WAIT` state.
-    pub(crate) time_wait: Instant,
+    time_wait: Instant,
     /// Peer-advertised maximum segment size (MSS).
-    pub(crate) peer_mss: u16,
+    peer_mss: u16,
     /// Indicates whether a zero-window probe segment is currently queued for
     /// transmission.
     has_pending_probe: bool,
@@ -122,18 +122,18 @@ impl fmt::Debug for ConnectionState {
 #[derive(Debug)]
 pub struct SndSeqSpace {
     /// SND.UNA - send unacknowledged
-    pub(crate) una: u32,
+    una: u32,
     /// SND.NXT - send next
     pub(crate) nxt: u32,
     /// SND.WND - send window
-    pub(crate) wnd: u16,
+    wnd: u16,
     /// SND.UP - send urgent pointer
     #[allow(unused)]
-    pub(crate) up: u16,
+    up: u16,
     /// SND.WL1 - segment sequence number used for last window update
-    pub(crate) wl1: u32,
+    wl1: u32,
     /// SND.WL2 - segment acknowledgment number used for last window update
-    pub(crate) wl2: u32,
+    wl2: u32,
     /// ISS - initial send sequence number
     pub(crate) iss: u32,
 }
@@ -159,9 +159,9 @@ pub struct RcvSeqSpace {
     /// RCV.WND - receive window
     pub(crate) wnd: u16,
     /// RCV.UP - receive urgent pointer
-    pub(crate) up: u16,
+    up: u16,
     /// IRS - initial receive sequence number
-    pub(crate) irs: u32,
+    irs: u32,
 }
 
 #[must_use]
@@ -833,6 +833,10 @@ impl TCB {
                                 // the peer's window opens; real data prevents
                                 // junk delivery.
                                 let byte = chunk.remove(0);
+                                if chunk.is_empty() {
+                                    self.snd_queue.pop_front();
+                                }
+
                                 let probe = segment_builders::probe(self, &[byte])?;
 
                                 self.retransmit_queue

@@ -7,9 +7,8 @@
 //!
 //! IP fragmentation splits datagrams to traverse networks with a smaller
 //! maximum transmission unit (MTU). If the `DF` flag is set, fragmentation is
-//! strictly prohibited and the packet above the MTU is dropped instead.
-//!
-//! The `identification` field groups fragments belonging to the same original
+//! strictly prohibited and the packet above the MTU is dropped instead. The
+//! `identification` field groups fragments belonging to the same original
 //! datagram. Together with the source and destination addresses and protocol
 //! field, it uniquely identifies each datagram for reassembly.
 //!

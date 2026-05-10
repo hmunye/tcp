@@ -538,7 +538,7 @@ impl TcpHeader {
         pseudo_header[0..4].copy_from_slice(&ip_header.src_addr());
         pseudo_header[4..8].copy_from_slice(&ip_header.dst_addr());
         pseudo_header[8] = 0;
-        pseudo_header[9] = ip_header.protocol().into();
+        pseudo_header[9] = ip_header.protocol().as_u8();
 
         let tcp_len: u16 = (self.header_len() + payload.len()) as u16;
         pseudo_header[10..12].copy_from_slice(&tcp_len.to_be_bytes());

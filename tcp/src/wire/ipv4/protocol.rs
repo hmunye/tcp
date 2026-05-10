@@ -201,10 +201,11 @@ pub enum Protocol {
     Reserved,
 }
 
-impl From<Protocol> for u8 {
+impl Protocol {
     #[inline]
-    fn from(proto: Protocol) -> u8 {
-        proto as u8
+    #[must_use]
+    pub(crate) const fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

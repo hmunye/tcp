@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::wire::TcpSegment;
 
 /// TCP segment awaiting acknowledgment, tracking its transmission timer and
-/// retry count.
+/// count.
 #[derive(Debug)]
 pub struct RetransmissionEntry {
     /// TCP segment queued for retransmission.
@@ -11,7 +11,7 @@ pub struct RetransmissionEntry {
     /// [`Instant`] the TCP segment was last transmitted.
     pub(crate) timer: Instant,
     /// Number of retransmission attempts, used for exponential backoff and
-    /// retry limit tracking.
+    /// retry limit.
     pub(crate) transmit_count: usize,
     /// Indicates if the entry is for zero-window probing.
     pub(crate) is_probe: bool,

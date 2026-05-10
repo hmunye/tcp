@@ -426,7 +426,7 @@ impl Ipv4Header {
         buf.append(&self.total_length.to_be_bytes());
         buf.append(&self.id.to_be_bytes());
         buf.append(&self.flags_and_offset.to_be_bytes());
-        buf.append(&[self.ttl, self.protocol.into()]);
+        buf.append(&[self.ttl, self.protocol.as_u8()]);
         buf.append(&self.header_checksum.to_be_bytes());
         buf.append(&self.src_addr);
         buf.append(&self.dst_addr);
