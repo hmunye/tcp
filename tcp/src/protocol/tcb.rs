@@ -34,8 +34,6 @@ pub struct TCB {
     /// In-order bytes received from the peer, ready for application delivery.
     pub(crate) rcv_buf: Vec<u8>,
     /// Application data not yet transmitted (e.g., peer window closing).
-    ///
-    /// TODO: Attempt to be piggyback buffered application data on future ACKs.
     pub(crate) snd_queue: VecDeque<Vec<u8>>,
     /// Out-of-order segments buffered by sequence number for in-order
     /// reassembly.
@@ -918,7 +916,30 @@ impl TCB {
                 }
             }
 
-            let ack = segment_builders::ack(self, &[])?;
+            // Attempt to piggyback payloads buffered for later transmission.
+            let ack = if self.snd.wnd > 0 {
+                match self.snd_queue.pop_front() {
+                    Some(mut chunk) => {
+                        let end = usize::from(self.snd.wnd.min(chunk.len() as u16));
+                        let payload = &chunk[..end];
+
+                        self.snd.wnd -= payload.len() as u16;
+                        self.snd.nxt = self.snd.nxt.wrapping_add(payload.len() as u32);
+
+                        let ack = segment_builders::ack(self, payload)?;
+
+                        if end != chunk.len() {
+                            // Window truncated the chunk; keep the remainder.
+                            self.snd_queue.push_front(chunk.split_off(end));
+                        }
+
+                        ack
+                    }
+                    None => segment_builders::ack(self, &[])?,
+                }
+            } else {
+                segment_builders::ack(self, &[])?
+            };
 
             tcp_debug!(
                 "[{}] ({:?}) received segment data: constructed ACK",

@@ -53,9 +53,7 @@
 
 // TODO: Implement limitations.
 //
-// - Handling of buffered application data (currently buffered, not drained)
 // - No zero-window probing
-// - No Initial Send Sequence Number (ISS) randomization
 
 // Must be defined first!
 #[macro_use]
