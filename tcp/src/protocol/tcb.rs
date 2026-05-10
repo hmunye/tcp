@@ -928,6 +928,10 @@ impl TCB {
 
                         let ack = segment_builders::ack(self, payload)?;
 
+                        // Queue `ACK` for potential retransmission.
+                        self.retransmit_queue
+                            .push_back(RetransmissionEntry::new(ack.clone()));
+
                         if end != chunk.len() {
                             // Window truncated the chunk; keep the remainder.
                             self.snd_queue.push_front(chunk.split_off(end));
