@@ -44,6 +44,9 @@ pub struct TCB {
     pub(crate) time_wait: Instant,
     /// Peer-advertised maximum segment size (MSS).
     pub(crate) peer_mss: u16,
+    /// Indicates whether a zero-window probe segment is currently queued for
+    /// transmission.
+    has_pending_probe: bool,
 }
 
 /// States in the TCP connection lifecycle [(RFC 793, Section 3.2)].
@@ -270,7 +273,7 @@ impl TCB {
 
         // Queue `SYN+ACK` for potential retransmission.
         tcb.retransmit_queue
-            .push_back(RetransmissionEntry::new(syn_ack.clone()));
+            .push_back(RetransmissionEntry::new(syn_ack.clone(), false));
 
         tcp_debug!(
             "[{}] (LISTEN) received SYN, constructed SYN+ACK: LISTEN -> SYN_RECEIVED",
@@ -335,7 +338,7 @@ impl TCB {
 
         // Queue `SYN` for potential retransmission.
         tcb.retransmit_queue
-            .push_back(RetransmissionEntry::new(syn.clone()));
+            .push_back(RetransmissionEntry::new(syn.clone(), false));
 
         tcp_debug!(
             "[{}] (CLOSED) constructed SYN: CLOSED -> SYN_SENT",
@@ -402,7 +405,7 @@ impl TCB {
 
                         // Queue `ACK` for potential retransmission.
                         self.retransmit_queue
-                            .push_back(RetransmissionEntry::new(ack.clone()));
+                            .push_back(RetransmissionEntry::new(ack.clone(), false));
 
                         psh_acks.push_back(ack);
 
@@ -415,7 +418,7 @@ impl TCB {
 
                         // Queue `ACK` for potential retransmission.
                         self.retransmit_queue
-                            .push_back(RetransmissionEntry::new(ack.clone()));
+                            .push_back(RetransmissionEntry::new(ack.clone(), false));
 
                         psh_acks.push_back(ack);
 
@@ -542,7 +545,7 @@ impl TCB {
 
                 // Queue `FIN+ACK` for potential retransmission.
                 self.retransmit_queue
-                    .push_back(RetransmissionEntry::new(fin_ack.clone()));
+                    .push_back(RetransmissionEntry::new(fin_ack.clone(), false));
 
                 tcp_debug!(
                     "[{}] ({state:?}) close: constructed FIN+ACK: {state:?} -> FIN_WAIT_1",
@@ -815,6 +818,31 @@ impl TCB {
                         self.state,
                         self.snd.wnd
                     );
+
+                    if self.snd.wnd == 0 && !self.has_pending_probe {
+                        if let Some(chunk) = self.snd_queue.front_mut() {
+                            if !chunk.is_empty() {
+                                tcp_debug!(
+                                    "[{}] ({:?}) send window closed with queued data: scheduling zero-window probe",
+                                    self.sock,
+                                    self.state,
+                                );
+
+                                // Transmit actual application data instead of
+                                // dummy bytes. The probe will be accepted when
+                                // the peer's window opens; real data prevents
+                                // junk delivery.
+                                let byte = chunk.remove(0);
+                                let probe = segment_builders::probe(self, &[byte])?;
+
+                                self.retransmit_queue
+                                    .push_back(RetransmissionEntry::new(probe, true));
+
+                                self.has_pending_probe = true;
+                                self.snd.nxt = self.snd.nxt.wrapping_add(1);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -930,7 +958,7 @@ impl TCB {
 
                         // Queue `ACK` for potential retransmission.
                         self.retransmit_queue
-                            .push_back(RetransmissionEntry::new(ack.clone()));
+                            .push_back(RetransmissionEntry::new(ack.clone(), false));
 
                         if end != chunk.len() {
                             // Window truncated the chunk; keep the remainder.
@@ -983,13 +1011,17 @@ impl TCB {
 
             self.retransmit_queue.retain_mut(|retransmit| {
                 let seg_len = tcp_segment_len(
-                    &retransmit.segment.payload,
-                    retransmit.segment.tcph.syn(),
-                    retransmit.segment.tcph.fin(),
+                    &retransmit.seg.payload,
+                    retransmit.seg.tcph.syn(),
+                    retransmit.seg.tcph.fin(),
                 );
                 let effective_rto = retransmit.effective_rto();
 
                 if retransmit.is_acked(seg_len, self.snd.una) {
+                    if retransmit.is_probe {
+                        self.has_pending_probe = false;
+                    }
+
                     false
                 } else if retransmit.is_expired() {
                     if retransmit.at_retry_limit() {
@@ -1011,7 +1043,7 @@ impl TCB {
                         retransmit.timer = Instant::now();
                         retransmit.transmit_count += 1;
 
-                        segments.push_back(retransmit.segment.clone());
+                        segments.push_back(retransmit.seg.clone());
 
                         tcp_debug!(
                             "[{}] ({:?}) segment queued for retransmission, current transmit count: {}",
@@ -1061,6 +1093,7 @@ impl TCB {
             retransmit_queue: VecDeque::new(),
             time_wait: Instant::now(),
             peer_mss,
+            has_pending_probe: false,
         }
     }
 
@@ -1125,7 +1158,7 @@ impl TCB {
 
                 // Queue `SYN+ACK` for potential retransmission.
                 self.retransmit_queue
-                    .push_back(RetransmissionEntry::new(syn_ack.clone()));
+                    .push_back(RetransmissionEntry::new(syn_ack.clone(), false));
 
                 tcp_debug!(
                     "[{}] (SYN_SENT) received SYN: constructed SYN+ACK: SYN_SENT -> SYN_RECEIVED",

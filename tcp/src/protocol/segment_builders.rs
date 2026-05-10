@@ -162,6 +162,26 @@ pub fn rst_bare(sock: SocketV4, seq: u32, ack: u32) -> Result<TcpSegment> {
     Ok(TcpSegment::new(iph, tcph, &[]))
 }
 
+/// Creates a TCP `ACK` segment in response to a zero-window condition,
+/// soliciting a window update from the receiver.
+///
+/// # Errors
+///
+/// Returns an error if the IPv4 header could not be created.
+#[inline]
+pub fn probe(tcb: &TCB, payload: &[u8]) -> Result<TcpSegment> {
+    let mut seg = build_segment(tcb, tcb.snd.nxt, payload, None)?;
+
+    // Acknowledge the peer's segment.
+    seg.tcph.set_ack_number(tcb.rcv.nxt);
+    seg.tcph.set_ack();
+
+    seg.iph.set_header_checksum();
+    seg.tcph.set_checksum(&seg.iph, payload);
+
+    Ok(seg)
+}
+
 fn build_segment(tcb: &TCB, seq: u32, payload: &[u8], mss: Option<u16>) -> Result<TcpSegment> {
     let mut tcph = TcpHeader::new(tcb.sock.src.port, tcb.sock.dst.port, seq, tcb.rcv.wnd);
 

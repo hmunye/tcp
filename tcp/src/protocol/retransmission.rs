@@ -7,12 +7,14 @@ use crate::wire::TcpSegment;
 #[derive(Debug)]
 pub struct RetransmissionEntry {
     /// TCP segment queued for retransmission.
-    pub(crate) segment: TcpSegment,
+    pub(crate) seg: TcpSegment,
     /// [`Instant`] the TCP segment was last transmitted.
     pub(crate) timer: Instant,
     /// Number of retransmission attempts, used for exponential backoff and
     /// retry limit tracking.
     pub(crate) transmit_count: usize,
+    /// Indicates if the entry is for zero-window probing.
+    pub(crate) is_probe: bool,
 }
 
 impl RetransmissionEntry {
@@ -23,14 +25,15 @@ impl RetransmissionEntry {
     /// Initial retransmission timeout (`RTO`), in seconds.
     const RTO: u64 = 3;
 
-    /// Returns a new `RetransmissionEntry`, given a `TcpSegment`.
+    /// Returns a new `RetransmissionEntry`.
     #[inline]
     #[must_use]
-    pub fn new(segment: TcpSegment) -> Self {
+    pub fn new(seg: TcpSegment, is_probe: bool) -> Self {
         RetransmissionEntry {
-            segment,
+            seg,
             timer: Instant::now(),
             transmit_count: 0,
+            is_probe,
         }
     }
 
@@ -43,16 +46,16 @@ impl RetransmissionEntry {
 
     /// Returns `true` if the peer has fully acknowledged this TCP segment.
     #[inline]
-    pub const fn is_acked(&self, segment_len: u32, una: u32) -> bool {
+    pub const fn is_acked(&self, seg_len: u32, una: u32) -> bool {
         // Fully acknowledged if the segment's sequence range falls at or below
         // the peer's SND.UNA.
-        self.segment.tcph.seq_number().wrapping_add(segment_len) <= una
+        self.seg.tcph.seq_number().wrapping_add(seg_len) <= una
     }
 
     /// Returns `true` if the retransmission limit has been exceeded.
     #[inline]
     pub const fn at_retry_limit(&self) -> bool {
-        self.transmit_count >= Self::RETRANSMIT_LIMIT
+        !self.is_probe && self.transmit_count >= Self::RETRANSMIT_LIMIT
     }
 
     /// Returns `true` if the retransmission timer has expired.
