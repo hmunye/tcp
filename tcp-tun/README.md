@@ -23,7 +23,7 @@ The script will:
 - Create a TUN device (`tun0`)
 - Assign the local IP `10.0.0.1/32`
 
-The TUN interface (`tun0`) is automatically removed when the script exits.
+`tun0` interface is automatically deleted when the script exits.
 
 ## License
 

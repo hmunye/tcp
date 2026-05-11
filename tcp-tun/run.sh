@@ -17,15 +17,16 @@ cargo build -q --release
 # `p` (permitted): adds the capability to the permitted set.
 sudo setcap CAP_NET_ADMIN=ep "$BINARY"
 
-sudo ip tuntap add dev tun0 mode tun
+sudo ip tuntap add dev tun0 mode tun || true
 
 # Brings up the TUN interface and assigns a local IP address.
 #
-# The /32 mask creates a single-host interface, with no subnet routing. 10.0.0.1 
-# is the address the server binds to and receives traffic on.
+# The /32 mask creates a single-host interface, with no subnet routing. 10.0.0.1
+# is the address the server binds to and receives traffic on. 10.0.0.2 is the
+# address to connect from.
 sudo ip link set dev tun0 up
-sudo ip addr add 10.0.0.1/32 dev tun0
+sudo ip addr add 10.0.0.2/32 peer 10.0.0.1 dev tun0
 
-echo "[tcp-tun]: listening on 10.0.0.1"
+echo "[tcp-tun]: listening on 10.0.0.1:80"
 
 "$BINARY"

@@ -14,19 +14,18 @@ use std::{io, ptr};
 
 use rio::io::{AsyncRead, AsyncWrite, Interest, IoHandle};
 use rio::task::coop;
-use tcp::Result;
-
-/// Maximum transmission unit (`MTU`) for the TUN interface, accounting for
-/// extra packet information if configured.
-pub const MTU_SIZE: usize = 1504;
 
 macro_rules! os_error {
     ($($tt:tt)+) => {{
         let e = ::std::io::Error::last_os_error();
         let prefix = format!($($tt)+);
-        tcp::Error::Io(::std::io::Error::new(e.kind(), format!("{prefix}: {e}")))
+        ::std::io::Error::new(e.kind(), format!("{prefix}: {e}"))
     }}
 }
+
+/// Maximum transmission unit (`MTU`) for the TUN interface, accounting for
+/// extra packet information if configured.
+pub const MTU_SIZE: usize = 1504;
 
 /// TUN (network `TUNnel`) device.
 ///
@@ -57,7 +56,7 @@ impl TUN {
     /// [EtherType]: https://en.wikipedia.org/wiki/EtherType
     #[inline]
     #[allow(unused)]
-    pub fn with_packet_info() -> Result<Self> {
+    pub fn with_packet_info() -> io::Result<Self> {
         Self::open_tun(true)
     }
 
@@ -78,7 +77,7 @@ impl TUN {
     ///
     /// [EtherType]: https://en.wikipedia.org/wiki/EtherType
     #[inline]
-    pub fn without_packet_info() -> Result<Self> {
+    pub fn without_packet_info() -> io::Result<Self> {
         Self::open_tun(false)
     }
 
@@ -87,7 +86,7 @@ impl TUN {
     /// # Errors
     ///
     /// Returns an error if the `TUN` device could not be configured.
-    pub fn set_non_blocking(&self) -> Result<()> {
+    pub fn set_non_blocking(&self) -> io::Result<()> {
         let fd = self.as_raw_fd();
 
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -102,7 +101,7 @@ impl TUN {
         Ok(())
     }
 
-    fn open_tun(with_packet_info: bool) -> Result<Self> {
+    fn open_tun(with_packet_info: bool) -> io::Result<Self> {
         let fd = OpenOptions::new()
             .read(true)
             .write(true)
@@ -121,11 +120,14 @@ impl TUN {
             libc::IFF_TUN | libc::IFF_NO_PI
         } as i16;
 
-        // Name the TUN device
-        let dev = b"tun0";
+        let dev_name = b"tun0";
 
         unsafe {
-            ptr::copy_nonoverlapping(dev.as_ptr(), ifr.ifr_name.as_mut_ptr().cast(), dev.len());
+            ptr::copy_nonoverlapping(
+                dev_name.as_ptr(),
+                ifr.ifr_name.as_mut_ptr().cast(),
+                dev_name.len(),
+            );
         }
 
         if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TUNSETIFF, ifr) } == -1 {
@@ -146,8 +148,8 @@ impl AsyncRead for TUN {
     /// Reads an IP packet from the TUN device.
     ///
     /// The provided buffer should be at least `MTU_SIZE` bytes to ensure the
-    /// full packet can be received, including any optional packet metadata if
-    /// configured.
+    /// full packet/fragment can be received, including any optional packet
+    /// metadata if configured.
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -207,10 +209,10 @@ impl AsyncRead for TUN {
 impl AsyncWrite for TUN {
     /// Writes an IP packet to the TUN device.
     ///
-    /// The packet must not exceed `MTU_SIZE` and is expected to include a valid
-    /// IP header. The kernel may silently drop packets for reasons such as
-    /// checksum failures, invalid routing, or rate limiting, even if the write
-    /// call succeeds.
+    /// The packet/fragment must not exceed `MTU_SIZE` and is expected to
+    /// include a valid IP header. The kernel may silently drop packets for
+    /// reasons such as checksum failures, invalid routing, or rate limiting,
+    /// even if the write call succeeds.
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -271,7 +273,6 @@ impl AsyncWrite for TUN {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // TUN devices do not have a formal shutdown; dropping the FD closes it.
         Poll::Ready(Ok(()))
     }
 }

@@ -25,7 +25,10 @@ use std::collections::HashMap;
 
 use rio::io::AsyncReadExt;
 use tcp::protocol::TCB;
-use tcp::{Result, SocketV4};
+use tcp::wire::{Ipv4Header, Protocol, TcpHeader};
+use tcp::{Result, SocketAddrV4, SocketV4};
+
+const SERVER_PORT: u16 = 80;
 
 #[rio::main]
 async fn main() -> Result<()> {
@@ -36,8 +39,63 @@ async fn main() -> Result<()> {
 
     let mut buf = [0u8; tun::MTU_SIZE];
 
-    let n = nic.read(&mut buf).await?;
-    println!("read: {:?}", &buf[..n]);
+    loop {
+        let n = nic.read(&mut buf).await?;
 
-    Ok(())
+        match Ipv4Header::try_from(&buf[..n]) {
+            Ok(iph) if iph.protocol() == Protocol::TCP => {
+                if !iph.is_valid_checksum() {
+                    eprintln!("[tcp-tun]: invalid IPv4 header checksum");
+                    continue;
+                }
+
+                match TcpHeader::try_from(&buf[iph.header_len()..n]) {
+                    Ok(tcph) if iph.header_len() + tcph.header_len() <= n => {
+                        let payload = &buf[iph.header_len() + tcph.header_len()..n];
+
+                        if !tcph.is_valid_checksum(&iph, payload) {
+                            eprintln!("[tcp-tun]: invalid TCP checksum");
+                            continue;
+                        }
+
+                        let peer = iph.src_addr();
+                        let peer_port = tcph.src_port();
+                        let local = iph.dst_addr();
+                        let local_port = tcph.dst_port();
+
+                        // `dst == 10.0.0.1` is guaranteed by the TUN interface.
+                        if local_port == SERVER_PORT {
+                            // Segment arrives as `peer -> local`. Normalize it
+                            // to `local -> peer`.
+                            let sock = SocketV4 {
+                                src: SocketAddrV4 {
+                                    addr: local,
+                                    port: local_port,
+                                },
+                                dst: SocketAddrV4 {
+                                    addr: peer,
+                                    port: peer_port,
+                                },
+                            };
+                            eprintln!("[tcp-tun]: received segment from {sock}");
+                        } else {
+                            eprintln!("[tcp-tun]: ignoring TCP segment for port {local_port}");
+                        }
+                    }
+                    Ok(_) => {
+                        eprintln!("[tcp-tun]: TCP segment truncated or malformed");
+                    }
+                    Err(err) => {
+                        eprintln!("[tcp-tun]: invalid TCP segment received: {err}");
+                    }
+                }
+            }
+            Ok(p) => {
+                eprintln!("[tcp-tun]: ignoring non-TCP packet ({:?})", p.protocol());
+            }
+            Err(err) => {
+                eprintln!("[tcp-tun]: invalid IPv4 packet received: {err}");
+            }
+        }
+    }
 }
