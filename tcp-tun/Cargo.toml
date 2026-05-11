@@ -13,5 +13,6 @@ categories = ["network-programming"]
 keywords = ["io", "network", "non-blocking"]
 
 [dependencies]
-tcp = { path = "../tcp", features = ["full"] }
 rio = { git = "https://github.com/hmunye/rio.git", version = "0.1.0", features = ["macros", "time", "io"] }
+tcp = { path = "../tcp", features = ["full"] }
+libc = "0.2.186"

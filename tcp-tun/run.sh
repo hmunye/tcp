@@ -6,7 +6,7 @@ BINARY="../target/release/tcp-tun"
 
 trap "sudo ip tuntap del dev tun0 mode tun 2>/dev/null || true" EXIT
 
-cargo build --release
+cargo build -q --release
 
 # CAP_NET_ADMIN is required for creating network devices or for connecting to 
 # network devices which are not owned by the user.

@@ -349,7 +349,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "rio"
 version = "0.1.0"
-source = "git+https://github.com/hmunye/rio.git#98d53fb02e0667cc14c7de1baeb8817c1dc78560"
+source = "git+https://github.com/hmunye/rio.git#f6531ae7290fbb3ac895ed6f9da599ad4eaf93bf"
 dependencies = [
  "libc",
  "rio-macros",
@@ -358,7 +358,7 @@ dependencies = [
 [[package]]
 name = "rio-macros"
 version = "0.1.0"
-source = "git+https://github.com/hmunye/rio.git#98d53fb02e0667cc14c7de1baeb8817c1dc78560"
+source = "git+https://github.com/hmunye/rio.git#f6531ae7290fbb3ac895ed6f9da599ad4eaf93bf"
 dependencies = [
  "quote",
  "syn",
@@ -460,6 +460,7 @@ dependencies = [
 name = "tcp-tun"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rio",
  "tcp",
 ]
