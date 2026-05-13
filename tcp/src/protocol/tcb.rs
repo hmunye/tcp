@@ -397,6 +397,12 @@ impl TCB {
                 let mut psh_acks = VecDeque::new();
                 let mut pos = 0;
 
+                tcp_debug!(
+                    "[{}] ({:?}) send: creating PSH+ACK segments from application data",
+                    self.sock,
+                    self.state
+                );
+
                 while pos < buf.len() {
                     let chunk_len = usize::min(seg_size as usize, buf.len() - pos);
 
@@ -547,18 +553,21 @@ impl TCB {
                 self.retransmit_queue
                     .push_back(RetransmissionEntry::new(fin_ack.clone(), false));
 
-                tcp_debug!(
-                    "[{}] ({state:?}) close: constructed FIN+ACK: {state:?} -> FIN_WAIT_1",
-                    self.sock,
-                    state = self.state
-                );
-
                 // `FIN` consumes one sequence number in the sequence space.
                 self.snd.nxt = self.snd.nxt.wrapping_add(1);
 
                 if self.state == ConnectionState::CLOSE_WAIT {
+                    tcp_debug!(
+                        "[{}] (CLOSE_WAIT) close: constructed FIN+ACK: CLOSE_WAIT -> LAST_ACK",
+                        self.sock,
+                    );
                     self.state = ConnectionState::LAST_ACK;
                 } else {
+                    tcp_debug!(
+                        "[{}] ({state:?}) close: constructed FIN+ACK: {state:?} -> FIN_WAIT_1",
+                        self.sock,
+                        state = self.state
+                    );
                     self.state = ConnectionState::FIN_WAIT_1;
                 }
 
@@ -718,8 +727,8 @@ impl TCB {
         let seqn = tcph.seq_number();
         let ackn = tcph.ack_number();
 
-        if let SeqDisposition::Invalid(seg) = self.validate_seq(seqn, seg_len, tcph.rst())? {
-            return Ok(seg);
+        if let SeqDisposition::Invalid(ack) = self.validate_seq(seqn, seg_len, tcph.rst())? {
+            return Ok(ack);
         }
 
         if tcph.rst() {
@@ -757,8 +766,8 @@ impl TCB {
         }
 
         if self.state == ConnectionState::SYN_RECEIVED {
-            if let Some(seg) = self.process_syn_recv(ackn)? {
-                return Ok(Some(seg));
+            if let Some(rst) = self.process_syn_recv(ackn)? {
+                return Ok(Some(rst));
             }
         }
 
@@ -786,7 +795,7 @@ impl TCB {
             // updated. If (SND.WL1 < SEG.SEQ or (SND.WL1 = SEG.SEQ and
             // SND.WL2 =< SEG.ACK)), set SND.WND <- SEG.WND, set
             // SND.WL1 <- SEG.SEQ, and set SND.WL2 <- SEG.ACK.
-            if ackn <= self.snd.una {
+            if ackn < self.snd.una {
                 tcp_warn!(
                     "[{}] ({:?}) received duplicate ACK `{ackn}`: ignoring",
                     self.sock,
@@ -813,7 +822,7 @@ impl TCB {
                     self.snd.wl2 = ackn;
 
                     tcp_debug!(
-                        "[{}] ({:?}) updated snd window size: {}",
+                        "[{}] ({:?}) updated snd.wnd: {}",
                         self.sock,
                         self.state,
                         self.snd.wnd
@@ -1075,6 +1084,20 @@ impl TCB {
         }
 
         None
+    }
+
+    /// Returns the current connection state.
+    #[inline]
+    #[must_use]
+    pub const fn state(&self) -> ConnectionState {
+        self.state
+    }
+
+    /// Returns the connection's socket.
+    #[inline]
+    #[must_use]
+    pub const fn sock(&self) -> SocketV4 {
+        self.sock
     }
 
     #[inline]

@@ -62,4 +62,25 @@ impl TcpSegment {
 
         buf
     }
+
+    /// Returns a reference to the IPv4 header of the segment.
+    #[inline]
+    #[must_use]
+    pub const fn iph(&self) -> &Ipv4Header {
+        &self.iph
+    }
+
+    /// Returns a reference to the TCP header of the segment.
+    #[inline]
+    #[must_use]
+    pub const fn tcph(&self) -> &TcpHeader {
+        &self.tcph
+    }
+
+    /// Returns a reference to the payload of the segment.
+    #[inline]
+    #[must_use]
+    pub const fn payload(&self) -> &[u8] {
+        self.payload.as_slice()
+    }
 }
