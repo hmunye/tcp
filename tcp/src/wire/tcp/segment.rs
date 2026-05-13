@@ -80,7 +80,7 @@ impl TcpSegment {
     /// Returns a reference to the payload of the segment.
     #[inline]
     #[must_use]
-    pub const fn payload(&self) -> &[u8] {
+    pub fn payload(&self) -> &[u8] {
         self.payload.as_slice()
     }
 }
