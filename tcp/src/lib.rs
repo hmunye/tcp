@@ -3,7 +3,8 @@
 //!
 //! Implemented as a protocol engine: a state machine operating over IPv4-based
 //! TCP segments that manages connection lifecycle, bidirectional data transfer,
-//! and termination/reset.
+//! termination/reset, serialization and deserialization of IPv4 headers, TCP
+//! headers, and TCP segments, and zero-window probing.
 //!
 //! This crate is **not a socket library.** It performs no network I/O and
 //! shares no state with the host operating system. Instead, it drives a TCP

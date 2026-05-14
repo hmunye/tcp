@@ -80,6 +80,7 @@ impl TcpSegment {
     /// Returns a reference to the payload of the segment.
     #[inline]
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)]
     pub fn payload(&self) -> &[u8] {
         self.payload.as_slice()
     }

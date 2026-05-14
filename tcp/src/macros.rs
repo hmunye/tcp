@@ -53,13 +53,14 @@ macro_rules! tcp_error {
     }};
 }
 
-macro_rules! tcp_log_segment {
-    ($iph:expr, $tcph:expr, $payload:expr) => {
+macro_rules! tcp_log_segment_and_tcb {
+    ($iph:expr, $tcph:expr, $payload:expr, $tcb:expr) => {
         #[cfg(feature = "trace")]
         {
             let iph = $iph;
             let tcph = $tcph;
             let payload = $payload;
+            let tcb = $tcb;
 
             tcp_debug!(
                 "received ipv4 datagram | version: {}, ihl: {}, tos: {}, total_len: {}, id: {}, DF: {}, MF: {}, frag_offset: {}, ttl: {}, protocol: {:?}, chksum: 0x{:04x} (valid: {}), src: {:?}, dst: {:?}",
@@ -102,6 +103,25 @@ macro_rules! tcp_log_segment {
                 "received {} bytes of payload: {:x?}",
                 payload.len(),
                 payload
+            );
+
+            tcp_debug!(
+                "TCB snd-space | iss: {}, una: {}, nxt: {}, wnd: {}, up: {}, wl1: {}, wl2: {}",
+                tcb.snd.iss,
+                tcb.snd.una,
+                tcb.snd.nxt,
+                tcb.snd.wnd,
+                tcb.snd.up,
+                tcb.snd.wl1,
+                tcb.snd.wl2,
+            );
+
+            tcp_debug!(
+                "TCB rcv-space | irs: {}, nxt: {}, wnd: {}, up: {}",
+                tcb.rcv.irs,
+                tcb.rcv.nxt,
+                tcb.rcv.wnd,
+                tcb.rcv.up,
             );
         }
     }

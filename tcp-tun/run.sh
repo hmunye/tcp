@@ -27,6 +27,6 @@ sudo ip tuntap add dev tun0 mode tun || true
 sudo ip link set dev tun0 up
 sudo ip addr add 10.0.0.2/32 peer 10.0.0.1 dev tun0
 
-echo "[tcp-tun]: listening on 10.0.0.1:80"
+echo "[tcp-tun]: listening on 10.0.0.1:80" 1>&2
 
 "$BINARY"

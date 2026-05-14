@@ -16,7 +16,7 @@ use crate::{Error, Result, SocketAddrV4, SocketV4};
 const DEFAULT_PEER_TCP_MSS: u16 = 536;
 
 /// Default receive window size (`RCV.WND`) advertised to the peer.
-const DEFAULT_RCV_WND: u16 = u16::MAX; // 64 KB
+const DEFAULT_RCV_WND: u16 = 64240; // 64 KB
 
 /// Transmission Control Block [(RFC 793, Section 3.2)].
 ///
@@ -202,8 +202,6 @@ impl TCB {
         //
         // SEGMENT ARRIVES (LISTEN)
 
-        tcp_log_segment!(iph, tcph, &[]);
-
         // Segment arrives as `peer -> local` (wire-format). Normalize it to the
         // socket representation: `local -> peer`.
         let sock = SocketV4 {
@@ -274,6 +272,8 @@ impl TCB {
         // Queue `SYN+ACK` for potential retransmission.
         tcb.retransmit_queue
             .push_back(RetransmissionEntry::new(syn_ack.clone(), false));
+
+        tcp_log_segment_and_tcb!(iph, tcph, &[], &tcb);
 
         tcp_debug!(
             "[{}] (LISTEN) received SYN, constructed SYN+ACK: LISTEN -> SYN_RECEIVED",
@@ -715,7 +715,7 @@ impl TCB {
         //     )));
         // }
 
-        tcp_log_segment!(iph_, tcph, payload);
+        tcp_log_segment_and_tcb!(iph_, tcph, payload, &self);
 
         if self.state == ConnectionState::SYN_SENT {
             return self.process_syn_sent(tcph);
@@ -829,6 +829,10 @@ impl TCB {
                     );
 
                     if self.snd.wnd == 0 && !self.has_pending_probe {
+                        // Zero-window probing is only initiated when there is
+                        // pending application data buffered for transmission;
+                        // if no data is queued, probing is unnecessary since
+                        // there is nothing to resume once the window reopens.
                         if let Some(chunk) = self.snd_queue.front_mut() {
                             if !chunk.is_empty() {
                                 tcp_debug!(
@@ -840,7 +844,7 @@ impl TCB {
                                 // Transmit actual application data instead of
                                 // dummy bytes. The probe will be accepted when
                                 // the peer's window opens; real data prevents
-                                // junk delivery.
+                                // any junk being delivered.
                                 let byte = chunk.remove(0);
                                 if chunk.is_empty() {
                                     self.snd_queue.pop_front();
@@ -904,25 +908,17 @@ impl TCB {
             ConnectionState::ESTABLISHED
                 | ConnectionState::FIN_WAIT_1
                 | ConnectionState::FIN_WAIT_2
-        ) && seg_len > 0
-        {
+        ) {
             self.process_segment_text(seqn, payload);
 
             if tcph.fin() {
                 // Accounting for the peer's FIN.
                 self.rcv.nxt = self.rcv.nxt.wrapping_add(1);
 
-                // Peer signaled end-of-transmission; drain contiguous
-                // buffered segments for delivery.
-                for (seq, mut data) in mem::take(&mut self.reassembly_map) {
-                    if seq == self.rcv.nxt {
-                        let len = data.len();
-
-                        self.rcv_buf.append(&mut data);
-                        self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
-                        self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
-                    }
-                }
+                // Peer signaled end-of-transmission; drain contiguous buffered
+                // segments for delivery.
+                self.drain_reassembly_map();
+                let _ = mem::take(&mut self.reassembly_map);
 
                 match self.state {
                     ConnectionState::ESTABLISHED => {
@@ -934,8 +930,7 @@ impl TCB {
                         self.state = ConnectionState::CLOSE_WAIT;
                     }
                     // Unreachable under normal RFC 793 flow
-                    // (FIN_WAIT_1 -> FIN_WAIT_2 on ACK). Kept as a
-                    // fallback.
+                    // (FIN_WAIT_1 -> FIN_WAIT_2 on ACK). Kept as a fallback.
                     ConnectionState::FIN_WAIT_1 => {
                         tcp_debug!(
                             "[{}] (FIN_WAIT_1) received FIN: FIN_WAIT_1 -> CLOSING",
@@ -957,42 +952,68 @@ impl TCB {
                 }
             }
 
-            // Attempt to piggyback payloads buffered for later transmission.
-            let ack = if self.snd.wnd > 0 {
-                match self.snd_queue.pop_front() {
-                    Some(mut chunk) => {
-                        let end = usize::from(self.snd.wnd.min(chunk.len() as u16));
-                        let payload = &chunk[..end];
+            let should_ack = seg_len > 0;
 
-                        self.snd.wnd -= payload.len() as u16;
-                        self.snd.nxt = self.snd.nxt.wrapping_add(payload.len() as u32);
+            let maybe_ack = if self.snd.wnd > 0 {
+                let mut payload = Vec::new();
+                let mut remaining = self.snd.wnd as usize;
 
-                        let ack = segment_builders::ack(self, payload)?;
+                // Attempt to piggyback payloads buffered for transmission.
+                while remaining > 0 {
+                    let Some(mut chunk) = self.snd_queue.pop_front() else {
+                        break;
+                    };
 
-                        // Queue `ACK` for potential retransmission.
-                        self.retransmit_queue
-                            .push_back(RetransmissionEntry::new(ack.clone(), false));
+                    let take = remaining.min(chunk.len());
 
-                        if end != chunk.len() {
-                            // Window truncated the chunk; keep the remainder.
-                            self.snd_queue.push_front(chunk.split_off(end));
-                        }
+                    payload.extend(&chunk[..take]);
+                    remaining -= take;
 
-                        ack
+                    if take != chunk.len() {
+                        // Window truncated the chunk; keep the remainder.
+                        self.snd_queue.push_front(chunk.split_off(take));
+                        break;
                     }
-                    None => segment_builders::ack(self, &[])?,
                 }
+
+                if !payload.is_empty() {
+                    self.snd.wnd -= payload.len() as u16;
+                    self.snd.nxt = self.snd.nxt.wrapping_add(payload.len() as u32);
+
+                    let psh_ack = segment_builders::ack(self, &payload)?;
+
+                    self.retransmit_queue
+                        .push_back(RetransmissionEntry::new(psh_ack.clone(), false));
+
+                    tcp_debug!(
+                        "[{}] ({:?}) received segment: piggybacking buffered data with constructed ACK",
+                        self.sock,
+                        self.state,
+                    );
+
+                    Some(psh_ack)
+                } else if should_ack {
+                    tcp_debug!(
+                        "[{}] ({:?}) received segment: constructed ACK",
+                        self.sock,
+                        self.state,
+                    );
+                    Some(segment_builders::ack(self, &[])?)
+                } else {
+                    None
+                }
+            } else if should_ack {
+                tcp_debug!(
+                    "[{}] ({:?}) received segment: constructed ACK",
+                    self.sock,
+                    self.state,
+                );
+                Some(segment_builders::ack(self, &[])?)
             } else {
-                segment_builders::ack(self, &[])?
+                None
             };
 
-            tcp_debug!(
-                "[{}] ({:?}) received segment data: constructed ACK",
-                self.sock,
-                self.state,
-            );
-
-            return Ok(Some(ack));
+            return Ok(maybe_ack);
         }
 
         if self.state == ConnectionState::TIME_WAIT {
@@ -1005,9 +1026,8 @@ impl TCB {
     }
 
     /// Processes the connection's retransmission queue for acknowledged or
-    /// expired segments, returning a `Duration` until the next expiration and
-    /// any segments requiring transmission. Returns `None` if the queue is
-    /// empty.
+    /// expired segments, returning an optional `Duration` until the next
+    /// retransmission timer and a queue of segments requiring transmission.
     ///
     /// If the connection state transitions to `CLOSED`, `self` can be safely
     /// dropped by the caller. In that case, the returned `RST` segment should
@@ -1017,73 +1037,86 @@ impl TCB {
     ///
     /// Panics if the RST segment could not be created.
     #[inline]
-    pub fn process_retransmissions(&mut self) -> Option<(Duration, VecDeque<TcpSegment>)> {
-        if !self.retransmit_queue.is_empty() {
-            let mut segments = VecDeque::new();
-            let mut nearest_timer = Duration::MAX;
+    pub fn process_retransmissions(&mut self) -> (Option<Duration>, VecDeque<TcpSegment>) {
+        let mut segments = VecDeque::new();
+        let mut nearest_timer: Option<Duration> = None;
 
-            self.retransmit_queue.retain_mut(|retransmit| {
-                let seg_len = tcp_segment_len(
-                    &retransmit.seg.payload,
-                    retransmit.seg.tcph.syn(),
-                    retransmit.seg.tcph.fin(),
+        let mut i = 0;
+        while i < self.retransmit_queue.len() {
+            let retransmit = &mut self.retransmit_queue[i];
+
+            let seg_len = tcp_segment_len(
+                &retransmit.seg.payload,
+                retransmit.seg.tcph.syn(),
+                retransmit.seg.tcph.fin(),
+            );
+            let effective_rto = retransmit.effective_rto();
+
+            if retransmit.is_acked(seg_len, self.snd.una) {
+                // Clear probe flag; only one active probe exists at a time.
+                self.has_pending_probe &= !retransmit.is_probe;
+
+                tcp_debug!(
+                    "[{}] ({:?}) retransmission segment fully acknowledged: removing from queue (is_probe: {})",
+                    self.sock,
+                    self.state,
+                    retransmit.is_probe
                 );
-                let effective_rto = retransmit.effective_rto();
 
-                if retransmit.is_acked(seg_len, self.snd.una) {
-                    if retransmit.is_probe {
-                        self.has_pending_probe = false;
-                    }
+                self.retransmit_queue.remove(i);
+                continue;
+            }
 
-                    false
-                } else if retransmit.is_expired() {
-                    if retransmit.at_retry_limit() {
-                        let rst = segment_builders::rst_bare(self.sock, self.snd.nxt, 0).expect(
-                            "IPv4 header creation should not fail, payload length less than maximum allowed",
-                        );
+            if retransmit.is_expired() {
+                if retransmit.at_retry_limit() {
+                    let rst = segment_builders::rst_bare(self.sock, self.snd.nxt, 0).expect(
+                        "IPv4 header creation should not fail, payload length less than maximum allowed",
+                    );
 
-                        tcp_warn!(
-                            "[{}] ({state:?}) retransmission limit exceeded, constructed RST: {state:?} -> CLOSED",
-                            self.sock,
-                            state = self.state,
-                        );
+                    tcp_warn!(
+                        "[{}] ({state:?}) retransmission limit exceeded, constructed RST: {state:?} -> CLOSED",
+                        self.sock,
+                        state = self.state,
+                    );
 
-                        self.state = ConnectionState::CLOSED;
-                        segments.push_back(rst);
+                    self.state = ConnectionState::CLOSED;
 
-                        false
-                    } else {
-                        retransmit.timer = Instant::now();
-                        retransmit.transmit_count += 1;
+                    segments.push_back(rst);
+                    self.retransmit_queue.remove(i);
 
-                        segments.push_back(retransmit.seg.clone());
-
-                        tcp_debug!(
-                            "[{}] ({:?}) segment queued for retransmission, current transmit count: {}",
-                            self.sock,
-                            self.state,
-                            retransmit.transmit_count
-                        );
-
-                        true
-                    }
+                    break;
                 } else {
-                    // Peer still has time to acknowledge the segment.
-                    #[allow(clippy::unchecked_time_subtraction)]
-                    let remaining = effective_rto - retransmit.timer.elapsed();
+                    retransmit.timer = Instant::now();
+                    retransmit.transmit_count += 1;
 
-                    if remaining < nearest_timer {
-                        nearest_timer = remaining;
-                    }
+                    segments.push_back(retransmit.seg.clone());
 
-                    true
+                    nearest_timer =
+                        Some(nearest_timer.map_or(effective_rto, |cur| cur.min(effective_rto)));
+
+                    tcp_debug!(
+                        "[{}] ({:?}) segment re-queued for retransmission, current transmit count: {} (is_probe: {})",
+                        self.sock,
+                        self.state,
+                        retransmit.transmit_count,
+                        retransmit.is_probe
+                    );
                 }
-            });
+            } else {
+                // Segment is still within its retransmission timeout window.
+                let remaining = effective_rto.checked_sub(retransmit.timer.elapsed());
 
-            return Some((nearest_timer, segments));
+                nearest_timer = match (nearest_timer, remaining) {
+                    (Some(current), Some(rem)) => Some(current.min(rem)),
+                    (None, Some(rem)) => Some(rem),
+                    (current, None) => current,
+                };
+            }
+
+            i += 1;
         }
 
-        None
+        (nearest_timer, segments)
     }
 
     /// Returns the current connection state.
@@ -1474,20 +1507,29 @@ impl TCB {
 
     #[inline]
     fn drain_reassembly_map(&mut self) {
-        self.reassembly_map.retain(|seq, data| {
-            if *seq != self.rcv.nxt {
-                return true;
+        loop {
+            let progressed = if let Some(data) = self.reassembly_map.remove(&self.rcv.nxt) {
+                let len = data.len();
+
+                tcp_debug!(
+                    "[{}] ({:?}) reassembling out-of-order data",
+                    self.sock,
+                    self.state
+                );
+
+                self.rcv_buf.extend(data);
+                self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
+                self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
+
+                true
+            } else {
+                false
+            };
+
+            if !progressed {
+                break;
             }
-
-            let len = data.len();
-            let payload = mem::take(data);
-
-            self.rcv_buf.extend(payload);
-            self.rcv.nxt = self.rcv.nxt.wrapping_add(len as u32);
-            self.rcv.wnd = self.rcv.wnd.saturating_sub(len as u16);
-
-            false
-        });
+        }
     }
 
     #[inline]

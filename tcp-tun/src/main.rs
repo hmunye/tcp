@@ -7,7 +7,6 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::use_self)]
 #![allow(clippy::redundant_else)]
-#![allow(clippy::too_many_lines)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::struct_excessive_bools)]
@@ -57,18 +56,32 @@ async fn send_with_backpressure(tx: &mut mpsc::Sender<Message>, mut message: Mes
     }
 }
 
+/// Sends the given `TcpSegment` to the `mpsc::Sender` while handling
+/// backpressure.
+async fn send_segment_with_backpressure(
+    tx: &mut mpsc::Sender<TcpSegment>,
+    mut segment: TcpSegment,
+) {
+    loop {
+        match tx.try_send(segment) {
+            Err(e) if e.is_full() => {
+                segment = e.into_inner();
+                task::yield_now().await;
+            }
+            _ => break,
+        }
+    }
+}
+
 async fn handle_connection(
     mut tcb: TCB,
     mut rx_in: mpsc::Receiver<TcpSegment>,
     mut tx_out: mpsc::Sender<Message>,
 ) -> Result<()> {
-    let mut duration = Duration::from_millis(1);
+    let mut duration = Duration::from_secs(1);
     let mut buf = [0u8; tun::MTU_SIZE];
 
     loop {
-        // TODO: Test retransmission using `hping3`.
-        let mut sleep_fut = time::sleep(duration).fuse();
-
         select! {
             maybe_in_segment = rx_in.next().fuse() => {
                 if let Some(in_segment) = maybe_in_segment {
@@ -77,20 +90,29 @@ async fn handle_connection(
 
                     match tcb.state() {
                         ConnectionState::ESTABLISHED => {
-                            if let Some(seg) = out_segment {
-                                send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
-                            }
-
                             let n = tcb.recv(&mut buf)?;
+                            let mut sent = false;
+
                             if n > 0 {
                                 if let Some(segments) = tcb.send(&buf[..n])?.0 {
                                     for seg in segments {
                                         send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
                                     }
+                                    sent = true;
+                                }
+                            }
+
+                            if !sent {
+                                if let Some(seg) = out_segment {
+                                    send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
                                 }
                             }
                         }
                         ConnectionState::CLOSE_WAIT => {
+                            if let Some(seg) = out_segment {
+                                send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
+                            }
+
                             if let Some(seg) = tcb.close()? {
                                 send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
                             }
@@ -101,21 +123,25 @@ async fn handle_connection(
                             }
 
                             send_with_backpressure(&mut tx_out, Message::Closed(tcb.sock())).await;
-
                             break;
                         }
                         _ => {}
                     }
                 }
             }
-            () = sleep_fut => {
-                if let Some((next_timer, segments)) = tcb.process_retransmissions() {
-                    for seg in segments {
-                        send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
-                    }
+            () = time::sleep(duration).fuse() => {
+                let (next_timer, segments) = tcb.process_retransmissions();
 
-                    duration = next_timer;
+                for seg in segments {
+                    send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
                 }
+
+                if tcb.state() == ConnectionState::CLOSED {
+                    send_with_backpressure(&mut tx_out, Message::Closed(tcb.sock())).await;
+                    break;
+                }
+
+                duration = next_timer.unwrap_or(Duration::from_secs(1));
             }
         }
     }
@@ -128,8 +154,7 @@ async fn main() -> Result<()> {
     let mut nic = tun::TUN::without_packet_info()?;
     nic.set_non_blocking()?;
 
-    let mut connections = HashMap::new();
-
+    let mut connections: HashMap<SocketV4, mpsc::Sender<TcpSegment>> = HashMap::default();
     let (mut tx_out, mut rx_out) = mpsc::channel::<Message>(128);
     let mut buf = [0u8; tun::MTU_SIZE];
 
@@ -177,30 +202,18 @@ async fn main() -> Result<()> {
 
                                     match connections.entry(sock) {
                                         Entry::Occupied(mut entry) => {
-                                            let tx_in: &mut mpsc::Sender<TcpSegment> = entry.get_mut();
-                                            let mut segment = TcpSegment::new(iph, tcph, payload);
-
-                                            loop {
-                                                match tx_in.try_send(segment) {
-                                                    Err(e) if e.is_full() => {
-                                                        segment = e.into_inner();
-                                                        task::yield_now().await;
-                                                    }
-                                                    _ => break,
-                                                }
-                                            }
+                                            send_segment_with_backpressure(entry.get_mut(), TcpSegment::new(iph, tcph, payload)).await;
                                         }
                                         Entry::Vacant(entry) => match TCB::passive_open(&iph, &tcph) {
                                             Ok((maybe_tcb, maybe_seg)) => {
                                                 let (tx_in, rx_in) = mpsc::channel::<TcpSegment>(8);
 
+                                                if let Some(seg) = maybe_seg {
+                                                    send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
+                                                }
+
                                                 if let Some(tcb) = maybe_tcb {
                                                     entry.insert(tx_in);
-
-                                                    if let Some(seg) = maybe_seg {
-                                                        send_with_backpressure(&mut tx_out, Message::Payload(seg.to_bytes())).await;
-                                                    }
-
                                                     rio::spawn(handle_connection(tcb, rx_in, tx_out.clone()));
                                                 }
                                             }

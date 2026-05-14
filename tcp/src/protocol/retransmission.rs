@@ -23,7 +23,7 @@ impl RetransmissionEntry {
     const RETRANSMIT_LIMIT: usize = 5;
 
     /// Initial retransmission timeout (`RTO`), in seconds.
-    const RTO: u64 = 3;
+    const RTO: u64 = 1;
 
     /// Returns a new `RetransmissionEntry`.
     #[inline]
